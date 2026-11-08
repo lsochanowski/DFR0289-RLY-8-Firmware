@@ -117,7 +117,14 @@ If no DHCP server answers within 15 s, the board uses the fallback address
 
 ### Web panel
 
-The web panel has two pages:
+The web panel has two pages (screenshots from a real board; addresses replaced with examples):
+
+<p align="center">
+  <img src="docs/img/panel-status.png" alt="Status page: relays, network, MQTT, device" width="45%">
+  &nbsp;
+  <img src="docs/img/panel-settings.png" alt="Settings page: network, MQTT, password, factory reset, firmware update" width="45%">
+</p>
+
 
 - **Status**: link, IP, MQTT state and broker, 8 relay toggles, all-on/all-off, restart
 - **Settings**: DHCP or static IP, host name, MQTT on/off, broker (empty =
@@ -376,6 +383,14 @@ Gdy w sieci nie ma serwera DHCP, po 15 s płytka ustawia adres **192.168.9.50/24
 Stan połączenia widać w panelu (*Status → MQTT / Home Assistant*) i na diodzie.
 
 ### 5. Panel WWW
+
+Zrzuty z prawdziwej płytki (adresy podmienione na przykładowe):
+
+<p align="center">
+  <img src="docs/img/panel-status.png" alt="Strona Status" width="45%">
+  &nbsp;
+  <img src="docs/img/panel-settings.png" alt="Strona Settings" width="45%">
+</p>
 
 - **Status** — link, adres IP, stan MQTT i adres brokera, 8 przycisków przekaźników,
   *All ON / All OFF*, restart.

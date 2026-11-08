@@ -14,6 +14,8 @@ typedef struct {
     size_t tx_left;
     int owns_resp;    /* holds the shared response buffer */
     int idle;
+    int uploading;    /* streaming a body into upload->data() */
+    size_t up_left;
     char req[HTTPD_REQ_MAX];
 } slot;
 
@@ -34,6 +36,8 @@ static int is_waiter(void *arg) {
 static char resp_buf[HTTPD_RESP_MAX];
 static int resp_busy;
 static httpd_handler handler_fn;
+static const httpd_upload *upload;
+static int upload_active;
 static unsigned request_count;
 
 static const char BUSY[] = "HTTP/1.0 503 Service Unavailable\r\nRetry-After: 1\r\n"
@@ -46,6 +50,13 @@ static const char BAD[] = "HTTP/1.0 400 Bad Request\r\nConnection: close\r\n"
 unsigned httpd_requests(void) { return request_count; }
 
 static void release(slot *s) {
+    if (s->uploading) {
+        s->uploading = 0;
+        upload_active = 0;
+        if (upload != NULL && upload->abort != NULL) {
+            upload->abort();
+        }
+    }
     if (s->owns_resp) {
         resp_busy = 0;
         s->owns_resp = 0;
@@ -117,7 +128,55 @@ static err_t on_sent(void *arg, struct tcp_pcb *pcb, u16_t len) {
     return ERR_OK;
 }
 
+static void feed(slot *s, const uint8_t *data, size_t n) {
+    if (!s->uploading) {
+        return;
+    }
+    if (n > s->up_left) {
+        n = s->up_left;
+    }
+    if (n > 0) {
+        upload->data(data, n);
+        s->up_left -= n;
+    }
+    if (s->up_left == 0) {
+        s->uploading = 0;
+        upload_active = 0;
+        size_t rn = upload->end(resp_buf, sizeof resp_buf);
+        respond(s, resp_buf, rn < sizeof resp_buf ? rn : sizeof resp_buf - 1, 1);
+    }
+}
+
+/* Starts a streamed upload once its headers are in. Returns 1 when the request was taken. */
+static int start_upload(slot *s) {
+    rly_http_request req;
+    if (upload == NULL || rly_http_parse_head(s->req, s->len, &req) != RLY_HTTP_READY ||
+        req.method != RLY_HTTP_POST || strcmp(req.path, upload->path) != 0) {
+        return 0;
+    }
+    if (upload_active || resp_busy) {
+        respond(s, BUSY, sizeof BUSY - 1, 0);
+        return 1;
+    }
+    resp_busy = 1;
+    s->owns_resp = 1;
+    request_count++;
+    size_t rl = 0;
+    if (!upload->begin(&req, resp_buf, sizeof resp_buf, &rl)) {
+        respond(s, resp_buf, rl < sizeof resp_buf ? rl : sizeof resp_buf - 1, 1);
+        return 1;
+    }
+    upload_active = 1;
+    s->uploading = 1;
+    s->up_left = req.content_length;
+    feed(s, (const uint8_t *)req.body, req.body_len);
+    return 1;
+}
+
 static void handle(slot *s) {
+    if (start_upload(s)) {
+        return;
+    }
     rly_http_request req;
     rly_http_parse_status ps = rly_http_parse(s->req, s->len, &req);
     if (ps == RLY_HTTP_INCOMPLETE) {
@@ -180,15 +239,27 @@ static err_t on_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) 
         }
         return ERR_OK;
     }
-    tcp_recved(pcb, p->tot_len);
     s->idle = 0;
-    if (s->tx == NULL) { /* still reading the request */
+    if (s->uploading) {
+        for (struct pbuf *q = p; q != NULL && s->uploading; q = q->next) {
+            feed(s, (const uint8_t *)q->payload, q->len);
+        }
+    } else if (s->tx == NULL) { /* still reading the request */
         size_t room = sizeof s->req - s->len;
         size_t n = p->tot_len < room ? p->tot_len : room;
         pbuf_copy_partial(p, s->req + s->len, (u16_t)n, 0);
         s->len += n;
         handle(s);
+        /* the rest of this segment belongs to a just-started upload */
+        static uint8_t tail[256];
+        for (size_t off = n; s->uploading && off < p->tot_len;) {
+            u16_t k = (u16_t)(p->tot_len - off < sizeof tail ? p->tot_len - off : sizeof tail);
+            pbuf_copy_partial(p, tail, k, (u16_t)off);
+            feed(s, tail, k);
+            off += k;
+        }
     }
+    tcp_recved(pcb, p->tot_len); /* after the flash writes: natural flow control */
     pbuf_free(p);
     return ERR_OK;
 }
@@ -276,6 +347,8 @@ static err_t on_accept(void *arg, struct tcp_pcb *pcb, err_t err) {
     tcp_abort(pcb);
     return ERR_ABRT;
 }
+
+void httpd_set_upload(const httpd_upload *u) { upload = u; }
 
 int httpd_start(httpd_handler handler) {
     handler_fn = handler;

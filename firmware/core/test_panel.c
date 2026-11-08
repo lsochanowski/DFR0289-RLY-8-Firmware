@@ -106,6 +106,42 @@ static void test_http(void) {
     expect_int("escape len", (long)n, (long)strlen(esc));
 }
 
+static void test_upload_auth(void) {
+    rly_config cfg;
+    rly_config_defaults(&cfg);
+    rly_http_request r;
+    size_t n;
+    const char *ok = "POST /update?t=tok123 HTTP/1.1\r\nContent-Length: 64000\r\n" AUTH_ADMIN "\r\n\x01\x02";
+    expect_int("head ready before body", rly_http_parse_head(ok, strlen(ok), &r), RLY_HTTP_READY);
+    expect_int("content length", (long)r.content_length, 64000);
+    expect_int("partial body", (long)r.body_len, 2);
+    expect_int("full parse waits", rly_http_parse(ok, strlen(ok), &r), RLY_HTTP_INCOMPLETE);
+    rly_http_parse_head(ok, strlen(ok), &r);
+    expect_int("upload allowed", rly_web_upload_allowed(&r, &cfg, "tok123", page, sizeof page, &n), 1);
+    expect_int("empty token refused", rly_web_upload_allowed(&r, &cfg, "", page, sizeof page, &n), 0);
+    const char *bad_tok = "POST /update?t=nope HTTP/1.1\r\nContent-Length: 64000\r\n" AUTH_ADMIN "\r\n";
+    rly_http_parse_head(bad_tok, strlen(bad_tok), &r);
+    expect_int("bad token", rly_web_upload_allowed(&r, &cfg, "tok123", page, sizeof page, &n), 0);
+    page[n] = '\0';
+    expect_has("403", page, "403");
+    const char *no_auth = "POST /update?t=tok123 HTTP/1.1\r\nContent-Length: 64000\r\n\r\n";
+    rly_http_parse_head(no_auth, strlen(no_auth), &r);
+    expect_int("no auth", rly_web_upload_allowed(&r, &cfg, "tok123", page, sizeof page, &n), 0);
+    page[n] = '\0';
+    expect_has("401", page, "401");
+    const char *big = "POST /update?t=tok123 HTTP/1.1\r\nContent-Length: 200000\r\n" AUTH_ADMIN "\r\n";
+    rly_http_parse_head(big, strlen(big), &r);
+    expect_int("too big", rly_web_upload_allowed(&r, &cfg, "tok123", page, sizeof page, &n), 0);
+    page[n] = '\0';
+    expect_has("413", page, "413");
+    n = rly_web_upload_result(RLY_IMG_OK, "2.0.0", page, sizeof page);
+    page[n] = '\0';
+    expect_has("result ok", page, "wgrano wersję 2.0.0");
+    n = rly_web_upload_result(RLY_IMG_BAD_MAGIC, "", page, sizeof page);
+    page[n] = '\0';
+    expect_has("result wrong file", page, "update.bin");
+}
+
 static void test_web(void) {
     rly_config cfg;
     rly_config_defaults(&cfg);
@@ -137,6 +173,7 @@ static void test_web(void) {
     n = run("GET /settings HTTP/1.1\r\n" AUTH_ADMIN "\r\n", &cfg, &st, &res);
     expect_has("settings form", page, "action=/save");
     expect_has("password not echoed", page, "name=admin_pass value=\"\"");
+    expect_has("update section", page, "/update?t=tok123");
     expect_int("settings page fits", n < 6144, 1);
     printf("     settings page %zu bytes\n", n);
 
@@ -338,6 +375,7 @@ static void test_mdns(void) {
 int main(void) {
     test_http();
     test_web();
+    test_upload_auth();
     test_console();
     test_mdns();
     printf("\n%d checks, %d failures\n", checks, failures);

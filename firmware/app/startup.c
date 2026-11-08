@@ -6,7 +6,11 @@
  */
 #include <stdint.h>
 
+#include "../core/rly_ota.h"
+#include "../core/rly_version.h"
+
 extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
+extern uint32_t _image_end;
 
 void Reset_Handler(void);
 void Default_Handler(void);
@@ -44,7 +48,19 @@ void Default_Handler(void) {
     }
 }
 
+/* Image header checked by the web-panel updater and by the bootloader (core/rly_ota.h). */
+__attribute__((section(".app_info"), used))
+const rly_app_info app_info = {
+    .magic = RLY_APP_INFO_MAGIC,
+    .info_version = RLY_APP_INFO_VERSION,
+    .image_end = (uint32_t)&_image_end,
+    .reserved = 0u,
+    .fw_version = RLY_FW_VERSION,
+};
+
 void Reset_Handler(void) {
+    /* The bootloader jumps here with VTOR still pointing at its own table. */
+    *(volatile uint32_t *)0xE000ED08u = (uint32_t)vectors; /* SCB_VTOR */
     uint32_t *src = &_sidata;
     uint32_t *dst = &_sdata;
     while (dst < &_edata) {

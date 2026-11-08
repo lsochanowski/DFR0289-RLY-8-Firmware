@@ -3,22 +3,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#define REG(addr) (*(volatile uint32_t *)(addr))
-
-/* RM0008 §3.3 / PM0075: connectivity line, 2 KB pages. */
-#define FLASH_KEYR REG(0x40022004u)
-#define FLASH_SR REG(0x4002200Cu)
-#define FLASH_CR REG(0x40022010u)
-#define FLASH_AR REG(0x40022014u)
-
-#define FLASH_SR_BSY (1u << 0)
-#define FLASH_SR_PGERR (1u << 2)
-#define FLASH_SR_WRPRTERR (1u << 4)
-#define FLASH_SR_EOP (1u << 5)
-#define FLASH_CR_PG (1u << 0)
-#define FLASH_CR_PER (1u << 1)
-#define FLASH_CR_STRT (1u << 6)
-#define FLASH_CR_LOCK (1u << 7)
+#include "flash.h"
 
 #define PAGE_A 0x0803F000u
 #define PAGE_B 0x0803F800u
@@ -28,52 +13,6 @@ _Static_assert(sizeof(rly_config) <= PAGE_SIZE, "config must fit one flash page"
 _Static_assert(sizeof(rly_config) % 2u == 0u, "flash is programmed in half-words");
 
 static const rly_config *page(uint32_t addr) { return (const rly_config *)(uintptr_t)addr; }
-
-static int wait_idle(void) {
-    for (uint32_t spin = 0; spin < 2000000u; spin++) {
-        if ((FLASH_SR & FLASH_SR_BSY) == 0u) {
-            uint32_t sr = FLASH_SR;
-            FLASH_SR = FLASH_SR_EOP | FLASH_SR_PGERR | FLASH_SR_WRPRTERR; /* write-1-to-clear */
-            return (sr & (FLASH_SR_PGERR | FLASH_SR_WRPRTERR)) ? -1 : 0;
-        }
-    }
-    return -1;
-}
-
-static void unlock(void) {
-    if (FLASH_CR & FLASH_CR_LOCK) {
-        FLASH_KEYR = 0x45670123u;
-        FLASH_KEYR = 0xCDEF89ABu;
-    }
-}
-
-static void lock(void) { FLASH_CR |= FLASH_CR_LOCK; }
-
-static int erase_page(uint32_t addr) {
-    if (wait_idle() != 0) {
-        return -1;
-    }
-    FLASH_CR |= FLASH_CR_PER;
-    FLASH_AR = addr;
-    FLASH_CR |= FLASH_CR_STRT;
-    int r = wait_idle();
-    FLASH_CR &= ~FLASH_CR_PER;
-    return r;
-}
-
-static int program(uint32_t addr, const void *data, uint32_t len) {
-    const uint16_t *src = (const uint16_t *)data;
-    FLASH_CR |= FLASH_CR_PG;
-    for (uint32_t i = 0; i < len / 2u; i++) {
-        *(volatile uint16_t *)(uintptr_t)(addr + 2u * i) = src[i];
-        if (wait_idle() != 0) {
-            FLASH_CR &= ~FLASH_CR_PG;
-            return -1;
-        }
-    }
-    FLASH_CR &= ~FLASH_CR_PG;
-    return 0;
-}
 
 /* Returns the address of the newest valid copy, or 0. */
 static uint32_t newest(void) {
@@ -105,12 +44,10 @@ int flash_cfg_save(rly_config *cfg) {
     static rly_config copy; /* aligned RAM copy; cfg may be a packed field elsewhere */
     copy = *cfg;
 
-    unlock();
-    int r = erase_page(target);
+    int r = flash_erase_page(target);
     if (r == 0) {
-        r = program(target, &copy, sizeof copy);
+        r = flash_program(target, (const uint8_t *)&copy, sizeof copy);
     }
-    lock();
     if (r == 0 && memcmp(page(target), &copy, sizeof copy) != 0) {
         r = -1;
     }
@@ -118,8 +55,6 @@ int flash_cfg_save(rly_config *cfg) {
 }
 
 void flash_cfg_erase(void) {
-    unlock();
-    (void)erase_page(PAGE_A);
-    (void)erase_page(PAGE_B);
-    lock();
+    (void)flash_erase_page(PAGE_A);
+    (void)flash_erase_page(PAGE_B);
 }

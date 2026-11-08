@@ -27,7 +27,8 @@ static const char *find_seq(const char *buf, size_t len, const char *seq) {
     return NULL;
 }
 
-rly_http_parse_status rly_http_parse(const char *buf, size_t len, rly_http_request *req) {
+static rly_http_parse_status parse(const char *buf, size_t len, rly_http_request *req,
+                                   int need_body) {
     memset(req, 0, sizeof *req);
     const char *end = find_seq(buf, len, "\r\n\r\n");
     if (end == NULL) {
@@ -87,7 +88,7 @@ rly_http_parse_status rly_http_parse(const char *buf, size_t len, rly_http_reque
             size_t cl = 0;
             while (v < le && *v >= '0' && *v <= '9') {
                 cl = cl * 10u + (size_t)(*v - '0');
-                if (cl > 65535u) {
+                if (cl > 0x100000u) { /* 1 MB: far above anything this device accepts */
                     return RLY_HTTP_TOO_BIG;
                 }
                 v++;
@@ -104,12 +105,30 @@ rly_http_parse_status rly_http_parse(const char *buf, size_t len, rly_http_reque
         p = le + 2;
     }
 
+    req->content_length = content_length;
+    req->head_len = head_len;
+    req->body = buf + head_len;
+    if (!need_body) {
+        size_t have = len - head_len;
+        req->body_len = have < content_length ? have : content_length;
+        return RLY_HTTP_READY;
+    }
+    if (content_length > 65535u) {
+        return RLY_HTTP_TOO_BIG; /* buffered requests are small forms */
+    }
     if (len - head_len < content_length) {
         return RLY_HTTP_INCOMPLETE;
     }
-    req->body = buf + head_len;
     req->body_len = content_length;
     return RLY_HTTP_READY;
+}
+
+rly_http_parse_status rly_http_parse(const char *buf, size_t len, rly_http_request *req) {
+    return parse(buf, len, req, 1);
+}
+
+rly_http_parse_status rly_http_parse_head(const char *buf, size_t len, rly_http_request *req) {
+    return parse(buf, len, req, 0);
 }
 
 static int hexval(char c) {

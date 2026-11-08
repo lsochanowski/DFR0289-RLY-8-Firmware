@@ -206,8 +206,8 @@ static size_t onoff(char *out, size_t cap, size_t used, const char *label, const
     return used;
 }
 
-static size_t page_settings(const rly_config *cfg, const char *token, char *out, size_t cap,
-                            int code, const char *error) {
+static size_t page_settings(const rly_config *cfg, const char *token, const char *fw, char *out,
+                            size_t cap, int code, const char *error) {
     size_t used = header(out, cap, code);
     char v[RLY_CFG_HOST_MAX];
     used = page_top(out, cap, used, "Ustawienia", cfg);
@@ -268,6 +268,23 @@ static size_t page_settings(const rly_config *cfg, const char *token, char *out,
       "fabryczne?')\">");
     used = token_field(out, cap, used, token);
     A("<button class=b>Przywróć ustawienia fabryczne</button></form></section>");
+
+    A("<section><h2>Aktualizacja firmware</h2><p>Zainstalowana wersja: <b>");
+    E(fw);
+    A("</b>. Wybierz plik <b>rly8-fw-v…-update.bin</b>. Ustawienia zostają zachowane.</p>"
+      "<input type=file id=fw accept=.bin><progress id=pg max=100 value=0 "
+      "style=width:100%;margin-top:8px></progress>"
+      "<button class=b type=button onclick=up()>Wgraj i uruchom ponownie</button><p id=us></p>"
+      "<script>function up(){var f=document.getElementById('fw').files[0],"
+      "s=document.getElementById('us'),g=document.getElementById('pg');"
+      "if(!f){s.textContent='Wybierz plik.';return}var x=new XMLHttpRequest();"
+      "x.open('POST','/update?t=");
+    A(token);
+    A("');x.upload.onprogress=function(e){if(e.lengthComputable)g.value=100*e.loaded/e.total};"
+      "x.onload=function(){s.textContent=x.responseText;if(x.status==200){"
+      "s.textContent+=' Strona odświeży się za 20 s.';setTimeout(function(){location='/'},20000)}};"
+      "x.onerror=function(){s.textContent='Błąd połączenia.'};s.textContent='Wysyłanie…';"
+      "x.send(f)}</script></section>");
     return page_end(out, cap, used);
 }
 
@@ -333,6 +350,65 @@ static size_t page_json(const rly_config *cfg, const rly_web_status *st, char *o
     return used;
 }
 
+static size_t unauthorized(char *out, size_t cap) {
+    size_t used = 0;
+    A("HTTP/1.0 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"RLY-8\", "
+      "charset=\"UTF-8\"\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n"
+      "Login: admin");
+    return used;
+}
+
+static size_t plain(char *out, size_t cap, int code, const char *text) {
+    size_t used = 0;
+    A(code == 200 ? "HTTP/1.0 200 OK\r\n"
+                  : (code == 403 ? "HTTP/1.0 403 Forbidden\r\n"
+                                 : (code == 413 ? "HTTP/1.0 413 Payload Too Large\r\n"
+                                                : "HTTP/1.0 400 Bad Request\r\n")));
+    A("Content-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\n"
+      "Connection: close\r\n\r\n");
+    A(text);
+    return used;
+}
+
+int rly_web_upload_allowed(const rly_http_request *req, const rly_config *cfg, const char *token,
+                           char *out, size_t cap, size_t *len) {
+    char t[24];
+    if (!rly_http_check_basic(req->auth, req->auth_len, "admin", cfg->admin_pass)) {
+        *len = unauthorized(out, cap);
+        return 0;
+    }
+    if (token == NULL || token[0] == '\0' ||
+        !rly_http_form_get(req->query, strlen(req->query), "t", t, sizeof t) ||
+        strcmp(t, token) != 0) {
+        *len = plain(out, cap, 403, "Formularz wygasł – odśwież stronę.");
+        return 0;
+    }
+    if (req->content_length < RLY_OTA_HEAD_KEEP) {
+        *len = plain(out, cap, 400, "Błąd: plik za mały.");
+        return 0;
+    }
+    if (req->content_length > RLY_SLOT_SIZE) {
+        *len = plain(out, cap, 413, "Błąd: plik za duży.");
+        return 0;
+    }
+    return 1;
+}
+
+size_t rly_web_upload_result(rly_img_status st, const char *version, char *out, size_t cap) {
+    char msg[128];
+    size_t m;
+    if (st == RLY_IMG_OK) {
+        m = rly_buf_append(msg, sizeof msg, 0, "OK: wgrano wersję ");
+        m = rly_buf_append(msg, sizeof msg, m, version[0] ? version : "?");
+        (void)rly_buf_append(msg, sizeof msg, m, ". Instalacja i restart (ok. 10 s).");
+        return plain(out, cap, 200, msg);
+    }
+    m = rly_buf_append(msg, sizeof msg, 0, "Błąd: ");
+    m = rly_buf_append(msg, sizeof msg, m, rly_img_status_text(st));
+    (void)rly_buf_append(msg, sizeof msg, m, ". Obecny firmware działa dalej.");
+    return plain(out, cap, 400, msg);
+}
+
 static int token_ok(const rly_http_request *req, const char *token) {
     char t[24];
     /* An empty token (not generated yet) must never match an empty field. */
@@ -377,7 +453,7 @@ static size_t do_save(const rly_http_request *req, rly_config *cfg, const char *
         tmp.mqtt_pass[0] = '\0';
     }
     if (err[0] != '\0') {
-        return page_settings(&tmp, token, out, cap, 400, err);
+        return page_settings(&tmp, token, st->fw_version, out, cap, 400, err);
     }
 
     *cfg = tmp;
@@ -444,7 +520,7 @@ size_t rly_web_handle(const rly_http_request *req, rly_config *cfg, const rly_we
             return page_status(cfg, st, token, out, cap, NULL);
         }
         if (strcmp(req->path, "/settings") == 0) {
-            return page_settings(cfg, token, out, cap, 200, NULL);
+            return page_settings(cfg, token, st->fw_version, out, cap, 200, NULL);
         }
         if (strcmp(req->path, "/api/status") == 0) {
             return page_json(cfg, st, out, cap);

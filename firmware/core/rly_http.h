@@ -29,10 +29,16 @@ typedef struct {
     size_t auth_len;
     const char *body; /* points into the request buffer */
     size_t body_len;
+    size_t content_length; /* announced body size */
+    size_t head_len;       /* bytes up to and including the blank line */
 } rly_http_request;
 
 /* Parses buf[0..len). Returns READY once the headers and Content-Length bytes are present. */
 rly_http_parse_status rly_http_parse(const char *buf, size_t len, rly_http_request *req);
+
+/* Same, but READY as soon as the headers are complete (streamed uploads). body/body_len
+ * then cover only the body bytes already in buf. */
+rly_http_parse_status rly_http_parse_head(const char *buf, size_t len, rly_http_request *req);
 
 /* Iterates "a=1&b=2" (application/x-www-form-urlencoded or a query string).
  * *pos starts at 0. Decodes '+' and %XX. Returns 1 while a pair was produced. */

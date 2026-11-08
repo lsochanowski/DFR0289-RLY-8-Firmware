@@ -38,6 +38,7 @@ Home Assistant broker on its own.
 | **DEFAULT button** | hold 5 s → factory defaults (DHCP, password `admin`, MQTT autodetect) |
 | **Blue status LED** | shows link / IP / MQTT state (it does nothing on the stock firmware) |
 | **Persistent config** | two flash pages (A/B copies with CRC32), so a power cut while saving cannot brick the settings |
+| **Firmware update from the browser** | upload `*-update.bin` in the panel; a small bootloader verifies (CRC32 + image header) and installs it, power-cut safe; settings are kept |
 | **Safe boot** | all relays OFF at power-up, no click sequence |
 
 ## Hardware notes (measured on a real board)
@@ -63,8 +64,9 @@ More detail: [docs/hardware-findings.md](docs/hardware-findings.md),
 - an **ST-Link** (V2 clone is fine) or any other SWD probe, 4 jumper wires
 - [pyOCD](https://pyocd.io) (`pip install pyocd`). OpenOCD or STM32CubeProgrammer also work
   with any SWD probe, but we only tested pyOCD with an ST-Link
-- the release file `rly8-fw-vX.Y.Z.bin` (or `.hex`) from
-  [Releases](https://github.com/lsochanowski/DFR0289-RLY-8-Firmware/releases)
+- the release file **`rly8-fw-vX.Y.Z-full.bin`** (or `-full.hex`) from
+  [Releases](https://github.com/lsochanowski/DFR0289-RLY-8-Firmware/releases): bootloader
+  plus application. The SWD probe is needed only once. Later updates go through the web panel.
 
 ### Wiring
 
@@ -92,7 +94,7 @@ stock firmware cannot be saved, and flashing needs a mass erase first (`pyocd er
 ### 2. Flash
 
 ```bash
-pyocd flash -t stm32f103rc rly8-fw-v1.0.0.bin --base-address 0x08000000
+pyocd flash -t stm32f103rc rly8-fw-v2.0.0-full.bin --base-address 0x08000000
 pyocd reset -t stm32f103rc
 ```
 
@@ -124,6 +126,38 @@ The panel UI is in Polish:
 - `GET /api/status`: JSON `{"node","name","fw","ip","link","uptime","mqtt","relays":[…]}`
 
 Saving settings writes flash and reboots the device.
+
+### Updating the firmware (v2.0.0 and later)
+
+1. Download `rly8-fw-vX.Y.Z-update.bin` from Releases.
+2. Open *Ustawienia* (Settings), go to **Aktualizacja firmware** (Firmware update), pick the
+   file and press **Wgraj i uruchom ponownie** (Upload and restart).
+3. The upload takes about 3 s. The board then restarts. The bootloader installs the image
+   while the blue LED is lit steadily for about 3 s. The panel is back after roughly 20 s.
+   Settings are kept.
+
+These checks run before anything is installed:
+
+- the file must be an RLY-8 application image (header magic, link address, exact size).
+  The `-full.bin`, a v1.x `.bin` and random files are refused, and the running firmware is
+  not touched;
+- the CRC-32 of what landed in flash must match what was sent;
+- if the connection drops mid-upload, nothing changes;
+- if power is lost **during the install**, the bootloader starts the copy again at the next
+  power-up. This was tested by resetting the MCU halfway through the copy.
+
+**Coming from v1.x?** v1 has no bootloader, so flash `-full.bin` over SWD once. Settings
+are kept because the config pages stay in the same place.
+
+Flash map:
+
+| Address | Size | Content |
+| --- | --- | --- |
+| `0x08000000` | 8 KB | bootloader |
+| `0x08002000` | 120 KB | application |
+| `0x08020000` | 120 KB | staging slot for uploads |
+| `0x0803E000` | 2 KB | update control record |
+| `0x0803F000` | 4 KB | settings (two copies) |
 
 ### Home Assistant
 
@@ -192,6 +226,8 @@ autodetect.
 | blinking 2× per second | link, waiting for an IP address |
 | double flash every second | has IP, MQTT not connected yet (or wrong credentials) |
 | steady on, short blink on activity | everything up |
+| steady ~3 s right after an update | bootloader is installing the new firmware |
+| fast blinking (~8 Hz) forever, panel unreachable | bootloader found no valid application: reflash `-full.bin` over SWD |
 
 ## Building from source
 
@@ -202,8 +238,10 @@ compiler for the unit tests.
 cd firmware
 make test       # host unit tests (protocol, MQTT, config, HTTP, panel, console, mDNS)
 make app        # build/app.elf
-make release    # dist/rly8-fw-v<version>.{bin,hex,elf} + SHA256SUMS
-make flash      # pyOCD; add STLINK_UID=<uid> to pick a probe
+make boot       # build/boot.elf (bootloader)
+make full       # build/full.bin + full.hex (bootloader + application)
+make release    # dist/: -full.bin/-full.hex (SWD), -update.bin (web panel), .elf, SHA256SUMS
+make flash      # flashes full.hex with pyOCD; add STLINK_UID=<uid> to pick a probe
 ```
 
 Layout:
@@ -211,10 +249,11 @@ Layout:
 ```text
 firmware/
   core/        portable logic, unit-tested on the host (MQTT, HA discovery, config,
-               HTTP parser, web pages, console, mDNS, stock protocol codecs)
+               HTTP parser, web pages, console, mDNS, OTA/bootloader, stock protocol codecs)
   port/f107/   STM32F107 drivers: clock, GPIO/relays, Ethernet MAC+DMA, lwIP glue,
                HTTP server, mDNS, flash config, USB CDC, LED/button
   app/         startup + main loop
+  boot/        bootloader (installs uploaded images; logic in core/rly_ota.c)
   third_party/ lwIP 2.2.0, ST CMSIS device header
 docs/          hardware findings, relay mapping, stock protocol notes
 ```
@@ -226,14 +265,16 @@ docs/          hardware findings, relay mapping, stock protocol notes
 - Passwords (panel, MQTT) are stored **unencrypted** in the MCU flash.
 - The **USB console has no password**: anyone with physical access can change settings.
   They can also reset everything with the button anyway.
-- State-changing requests are POST-only and carry a per-boot CSRF token.
+- State-changing requests are POST-only and carry a per-boot CSRF token. Firmware uploads
+  need the admin password and that token as well.
+- Firmware images are **not signed**: whoever knows the admin password can install any
+  image that passes the format check.
 
 ## Limitations / roadmap
 
 - Not implemented yet: the stock protocols (JSON on TCP port 2000, `55 AA` frames over RS485).
   Codecs exist in `core/` and are tested; they are not wired to TCP/RS485.
 - Relay states are not restored after a power cut; all relays start OFF.
-- Firmware update over the web panel is planned.
 
 ## License
 

@@ -19,6 +19,7 @@ Po wgraniu płytka działa jako urządzenie **MQTT dla Home Assistanta**. Ma **p
 - nazwa w sieci lokalnej: `http://rly8-xxxxxx.local/`
 - **przycisk DEFAULT** (5 s) przywraca ustawienia fabryczne
 - **niebieska dioda** pokazuje stan urządzenia
+- **aktualizacja firmware z przeglądarki** (od v2.0.0), ustawienia zostają zachowane
 - po włączeniu zasilania wszystkie przekaźniki są wyłączone
 
 ## 2. Wgranie firmware
@@ -27,8 +28,10 @@ Po wgraniu płytka działa jako urządzenie **MQTT dla Home Assistanta**. Ma **p
 
 - programator **ST-Link** (wystarczy tani klon V2) i 4 przewody
 - komputer z [pyOCD](https://pyocd.io) (`pip install pyocd`)
-- plik `rly8-fw-vX.Y.Z.bin` z zakładki
-  [Releases](https://github.com/lsochanowski/DFR0289-RLY-8-Firmware/releases)
+- plik **`rly8-fw-vX.Y.Z-full.bin`** z zakładki
+  [Releases](https://github.com/lsochanowski/DFR0289-RLY-8-Firmware/releases). Zawiera
+  bootloader i aplikację. Programator jest potrzebny tylko raz, kolejne wersje wgrywa się
+  przez panel WWW.
 
 ### Podłączenie programatora
 
@@ -57,7 +60,7 @@ kopii nie da się zrobić, a przed wgraniem trzeba wykonać `pyocd erase --chip`
 ### 2.3. Wgranie
 
 ```bash
-pyocd flash -t stm32f103rc rly8-fw-v1.0.0.bin --base-address 0x08000000
+pyocd flash -t stm32f103rc rly8-fw-v2.0.0-full.bin --base-address 0x08000000
 pyocd reset -t stm32f103rc
 ```
 
@@ -94,7 +97,23 @@ Stan połączenia widać w panelu (*Status → MQTT*) i na diodzie.
 - Puste pole hasła oznacza „bez zmian”. Zapis zapamiętuje ustawienia i restartuje płytkę.
 - `http://<adres>/api/status` zwraca stan w JSON (np. do skryptów).
 
-## 6. Konsola USB
+## 6. Aktualizacja firmware (od v2.0.0)
+
+1. Pobierz `rly8-fw-vX.Y.Z-update.bin` z zakładki Releases.
+2. *Ustawienia → Aktualizacja firmware*: wybierz plik i kliknij **Wgraj i uruchom ponownie**.
+3. Wysyłanie trwa ok. 3 s. Potem płytka się restartuje, a bootloader instaluje nową wersję
+   (dioda świeci ok. 3 s). Panel wraca po ok. 20 s. Ustawienia zostają.
+
+Zabezpieczenia:
+- Złe pliki są odrzucane, a działający firmware zostaje nietknięty. Dotyczy to `-full.bin`,
+  plików z wersji 1.x i przypadkowych plików.
+- Zerwane wysyłanie niczego nie zmienia.
+- Po zaniku zasilania w trakcie instalacji bootloader powtarza ją przy następnym starcie.
+
+**Przejście z wersji 1.x:** v1 nie ma bootloadera, więc raz wgraj `-full.bin` programatorem
+(pkt 2). Ustawienia zostaną zachowane.
+
+## 7. Konsola USB
 
 Podłącz gniazdo USB-B do komputera. W systemie pojawi się port szeregowy:
 - macOS: `/dev/cu.usbmodem*`
@@ -132,7 +151,7 @@ save
 reboot
 ```
 
-## 7. Przycisk DEFAULT i dioda
+## 8. Przycisk DEFAULT i dioda
 
 **Przytrzymaj DEFAULT przez 5 sekund**. Dioda zacznie szybko migać, potem zaświeci na stałe
 i płytka uruchomi się z ustawieniami fabrycznymi: DHCP, hasło `admin`, MQTT z autodetekcją.
@@ -143,15 +162,19 @@ i płytka uruchomi się z ustawieniami fabrycznymi: DHCP, hasło `admin`, MQTT z
 | miga 2× na sekundę | link jest, czeka na adres IP |
 | podwójny błysk co sekundę | jest IP, brak połączenia z MQTT (np. złe hasło) |
 | świeci, mrugnie przy akcji | wszystko działa |
+| świeci ok. 3 s zaraz po aktualizacji | bootloader instaluje nowy firmware |
+| bardzo szybko miga bez końca, panel nie odpowiada | brak poprawnego firmware — wgraj `-full.bin` programatorem |
 
-## 8. Bezpieczeństwo
+## 9. Bezpieczeństwo
 
 - Panel działa po **HTTP bez szyfrowania**. Używaj go w zaufanej sieci i zmień hasło domyślne.
 - Hasła są zapisane w pamięci płytki **bez szyfrowania**.
 - **Konsola USB nie ma hasła**. Kto ma fizyczny dostęp, może zmienić ustawienia, tak jak
   przyciskiem.
+- Pliki firmware **nie są podpisane**: kto zna hasło panelu, może wgrać dowolny obraz
+  w poprawnym formacie.
 
-## 9. Ograniczenia
+## 10. Ograniczenia
 
 - Oryginalne protokoły DFRobot (JSON na porcie TCP 2000, ramki `55 AA` po RS485) nie są
   jeszcze obsługiwane.

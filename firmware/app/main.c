@@ -26,6 +26,7 @@
 #include "../port/f107/discovery.h"
 #include "../port/f107/eth.h"
 #include "../port/f107/eth_dma.h"
+#include "../port/f107/flash.h"
 #include "../port/f107/ethernetif.h"
 #include "../port/f107/flash_cfg.h"
 #include "../port/f107/httpd.h"
@@ -254,6 +255,50 @@ static size_t web_handler(const rly_http_request *req, char *out, size_t cap) {
     return n;
 }
 
+/* ---------------------------------------------------------------- firmware upload */
+
+static rly_ota_writer ota;
+static int ota_led;
+
+static int ota_begin(const rly_http_request *req, char *out, size_t cap, size_t *len) {
+    if (!rly_web_upload_allowed(req, &cfg, token, out, cap, len)) {
+        return 0;
+    }
+    (void)flash_erase_page(RLY_OTA_CTRL_ADDR); /* no stale "pending" record while we write */
+    (void)rly_ota_begin(&ota, &flash_ops, RLY_STAGING_BASE, RLY_SLOT_SIZE,
+                        (uint32_t)req->content_length);
+    return 1;
+}
+
+static void ota_data(const uint8_t *data, size_t n) {
+    (void)rly_ota_write(&ota, data, (uint32_t)n);
+    if ((++ota_led & 7) == 0) {
+        ui_activity(); /* LED flickers while the image streams in */
+    }
+}
+
+static size_t ota_end(char *out, size_t cap) {
+    rly_ota_ctrl ctrl;
+    rly_img_status st = rly_ota_finish(&ota, RLY_APP_BASE, &ctrl);
+    char version[16];
+    rly_image_version(ota.head, sizeof ota.head, version, sizeof version);
+    if (st == RLY_IMG_OK) {
+        if (flash_erase_page(RLY_OTA_CTRL_ADDR) != 0 ||
+            flash_program(RLY_OTA_CTRL_ADDR, (const uint8_t *)&ctrl, sizeof ctrl) != 0) {
+            st = RLY_IMG_IO;
+        } else {
+            schedule_reboot(1500u); /* the bootloader installs it */
+        }
+    }
+    return rly_web_upload_result(st, version, out, cap);
+}
+
+static void ota_abort(void) {
+    /* Nothing to undo: without the control record the bootloader ignores the staging slot. */
+}
+
+static const httpd_upload ota_upload = {"/update", ota_begin, ota_data, ota_end, ota_abort};
+
 /* ---------------------------------------------------------------- USB console */
 
 static void con_write(void *ctx, const char *text) {
@@ -378,6 +423,7 @@ static void net_init(void) {
     ip_addr_set_ip4_u32(&dns, cfg.dns);
     dns_setserver(cfg.dhcp ? 1 : 0, &dns); /* with DHCP: our DNS is the second choice */
 
+    httpd_set_upload(&ota_upload);
     (void)httpd_start(web_handler);
     discovery_init(&netif, node_id);
     if (cfg.mqtt_enabled) {

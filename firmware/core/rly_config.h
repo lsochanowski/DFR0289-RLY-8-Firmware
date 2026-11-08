@@ -21,6 +21,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "rly_crc.h"
+
 #define RLY_CFG_MAGIC 0x47464352u /* "RCFG" */
 #define RLY_CFG_VERSION 1u
 
@@ -62,7 +64,6 @@ typedef enum {
 /* Factory defaults: DHCP on, MQTT on with broker autodetect, admin password "admin". */
 void rly_config_defaults(rly_config *cfg);
 
-uint32_t rly_crc32(const void *data, size_t len);
 void rly_config_seal(rly_config *cfg);         /* sets magic/version/size and crc */
 int rly_config_valid(const rly_config *cfg);   /* 1 when magic, version, size and crc match */
 

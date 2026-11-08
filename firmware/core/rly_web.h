@@ -11,6 +11,8 @@
  *   POST /reboot
  *   POST /factory        restore factory defaults, then reboot
  *   GET  /api/status     JSON status (for scripts)
+ *   POST /update?t=<tok> raw application image (streamed into the staging slot, see
+ *                        core/rly_ota.h); the bootloader installs it after a reboot
  */
 #ifndef RLY_WEB_H
 #define RLY_WEB_H
@@ -20,6 +22,7 @@
 
 #include "rly_config.h"
 #include "rly_http.h"
+#include "rly_ota.h"
 
 typedef struct {
     const char *fw_version;
@@ -56,5 +59,13 @@ typedef struct {
  * it back on success. Returns the response length in out (headers + body). */
 size_t rly_web_handle(const rly_http_request *req, rly_config *cfg, const rly_web_status *st,
                       const char *token, char *out, size_t cap, rly_web_result *res);
+
+/* Firmware upload, checked as soon as the request headers are in: Basic auth, the token in
+ * the query string and the announced size. Returns 1 to accept; otherwise writes a complete
+ * error response into out and returns 0. */
+int rly_web_upload_allowed(const rly_http_request *req, const rly_config *cfg, const char *token,
+                           char *out, size_t cap, size_t *len);
+/* Response for a finished upload. */
+size_t rly_web_upload_result(rly_img_status st, const char *version, char *out, size_t cap);
 
 #endif /* RLY_WEB_H */

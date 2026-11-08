@@ -67,10 +67,13 @@ USB działa tylko z obejściem: firmware ustawia **PA9 jako wyjście w stanie wy
 Probe: ST-Link (UID własnej sondy: `pyocd list`; lokalnie w `AGENTS.local.md`, poza repo). **Nie ma ROM DFU/BOOT0 — działa SWD.**
 
 ```bash
-cd <katalog repozytorium>
-PYTHONPATH=work/toolchain/py python3 -m pyocd flash -t stm32f103rc \
-  -u $STLINK_UID firmware/build/app.elf
+cd firmware && make flash STLINK_UID=$STLINK_UID   # bootloader + aplikacja (build/full.hex)
 ```
+
+**Od v2 aplikacja jest linkowana pod `0x08002000`** (za 8 KB bootloadera, `port/f107/app.ld`).
+Samego `app.elf` nie wgrywać na czysty chip bez bootloadera — używać `make flash` (full.hex).
+Mapa flash i protokół aktualizacji: `core/rly_ota.h`. Sondy diagnostyczne (`port/probe/f107.ld`)
+nadal linkują się od `0x08000000` i nadpisują bootloader.
 
 - `-t stm32f103rc` (nie `stm32f107…`) — pyOCD nie ma wbudowanego targetu F107, a algorytm
   flashowania F1 jest wspólny i rozmiar 256 KB się zgadza.
@@ -143,6 +146,9 @@ firmware/
     rly_web.c      # panel WWW: strony, /save, /relay, /factory, /api/status, token CSRF
     rly_console.c  # konsola tekstowa (help/status/show/set/save/relay/reboot/factory)
     rly_mdns.c     # mDNS: zapytania PTR/A, parser odpowiedzi, odpowiedź A dla <host>.local
+    rly_ota.c      # OTA: walidacja obrazu, zapis strumieniowy, decyzja i instalacja bootloadera
+    rly_crc.c      # CRC-32
+    rly_version.h  # jedyne źródło numeru wersji
     test_*.c       # testy hostowe
   port/f107/       # warstwa sprzętowa
     board.h        # MCU, zegary, GPIO
@@ -152,7 +158,9 @@ firmware/
     eth_dma.c      # MAC + DMA, ringi RX×4 / TX×2, deskryptory
     ethernetif.c   # glue lwIP (polling, bufory statyczne)
     tcp_stream.c   # rly_stream na gnieździe TCP lwIP (dla klienta MQTT)
+    flash.c        # kasowanie/programowanie flash (wspólne: konfiguracja, OTA, bootloader)
     flash_cfg.c    # konfiguracja w 2 ostatnich stronach flash (A/B, 0x0803F000/F800)
+    app.ld         # linker aplikacji: 0x08002000, nagłówek obrazu pod +0x200
     httpd.c        # serwer HTTP na raw API lwIP (2 sloty + kolejka 4 połączeń)
     discovery.c    # mDNS responder + autodetekcja brokera (_mqtt._tcp, homeassistant.local), DNS
     usb_cdc.c      # USB OTG FS device, CDC-ACM (konsola), przerwanie IRQ 67
@@ -164,6 +172,7 @@ firmware/
     startup.c      # tabela wektorów (desygnowane indeksy!) + reset handler
     main.c         # boot: config → clock → relays → systick → LED/USB → PHY → MAC/DMA → lwIP
                    #       → WWW, mDNS, MQTT; obsługa akcji (zapis, restart, factory)
+  boot/            # bootloader (8 KB; boot.c + boot.ld), logika w core/rly_ota.c
   third_party/
     lwip/          # lwIP 2.2.0 (tylko potrzebne katalogi) + lwipopts.h projektu
     cmsis/         # stm32f107xc.h (definicje rejestrów, źródło nazw bitów)
@@ -174,7 +183,9 @@ firmware/
 ```bash
 cd firmware
 
-make test          # 8 zestawów testów hostowych (~325 sprawdzeń) — musi być zielone
+make test          # 9 zestawów testów hostowych (~372 sprawdzenia) — musi być zielone
+make full          # bootloader + aplikacja → build/full.bin/.hex
+make release       # dist/: -full.bin/-full.hex (SWD), -update.bin (panel), .elf, SHA256SUMS
 make port-layer    # kompilacja warstwy port/f107 (bez linkowania)
 make app           # pełny firmware: app + port + core + lwIP  → build/app.elf
 make probe-*       # programy diagnostyczne (patrz §6)
@@ -249,6 +260,11 @@ Co blokowało Ethernet (naprawione):
 → `cfg_loaded=1`, factory przyciskiem → strony flash `0xFF`, konsola USB enumeruje się jako
 `RLY-8 open firmware` (`0483:5740`), autodetekcja znalazła broker HA.
 
+**OTA (v2.0.0, zmierzone 2026-11-08):** upload 67 KB w 2,8 s, powrót z nową wersją po ~24 s;
+odrzucone: obraz v1, `full.bin`, losowy plik, zły token (403), złe hasło (401); zerwany upload
+nic nie zmienia; reset MCU w połowie kopiowania → bootloader powtarza instalację (znacznik
+`OTAP` zostaje, slot aplikacji był skasowany) → nowa wersja wstaje; ustawienia przetrwały OTA.
+
 **Otwarte:** MQTT `mqtt_state=3` — broker HA wymaga loginu; wpisać `mqtt_user`/`mqtt_pass`
 w panelu i sprawdzić 8 przełączników w HA.
 
@@ -283,7 +299,7 @@ pod `0x2000F000` (wzorzec `0xB007`) — ten drugi odróżnia „pętla" od „p�
    (discovery), przełączenie z HA → przekaźnik (pole `relay_mask` w `boot_status`).
 4. **Serwer JSON na TCP:2000** — zgodność z oryginalnym DFRobot (użyć `core/rly_json.c`).
 5. **RS485 / ramki `55 AA`** — zgodność z magistralą (`core/rly_frame.c`).
-6. Porządki: watchdog (IWDG), OTA, opcjonalnie zapamiętywanie stanu przekaźników po restarcie
+6. Porządki: watchdog (IWDG), podpis obrazów OTA, opcjonalnie zapamiętywanie stanu przekaźników po restarcie
    (dziś: po starcie wszystkie OFF, bez sekwencji klikania), uwierzytelnianie konsoli USB
    (dziś: bez hasła — zakładamy fizyczny dostęp).
 
@@ -303,6 +319,9 @@ pod `0x2000F000` (wzorzec `0xB007`) — ten drugi odróżnia „pętla" od „p�
 - **mDNS bez IGMP**: lwIP przyjmuje multicast przy `LWIP_IGMP=0`, ale MAC musi mieć `PAM`
   (`MACFFR` bit 4), inaczej ramki do 224.0.0.251 giną w filtrze.
 - **USB OTG FS na F107 nie ma `NOVBUSSENS`** — bez VBUS na PA9 jedyna droga to wymusić PA9.
+- **Odczyt SWD w trakcie kasowania flash zwraca „DP wait”** — magistrala stoi; w skryptach
+  testowych traktować to jako „bootloader pracuje”, nie jako błąd.
+- **`#` w `$(shell …)` w Makefile to komentarz** — w wyrażeniu sed używać `.define` albo `\#`.
 
 - **`MACMIIAR` to `MAC_BASE + 0x10`**, `MACMIIDR` to `+0x14`. Zły adres wygląda jak
   „MB wisi na zawsze", a jest odczytem własnego zapisu.

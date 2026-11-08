@@ -6,7 +6,7 @@ friendly MQTT device** with a built-in **web panel**, a **USB serial console** a
 **factory-reset button**. You can still switch relays without Home Assistant, from the
 panel, the console or plain MQTT.
 
-> Polish user manual: [docs/MANUAL.pl.md](docs/MANUAL.pl.md)
+> **Polski:** pełna instrukcja po polsku jest [niżej](#polski).
 
 > **Not affiliated with DFRobot.** "DFRobot" and "RLY-8" are used only to say which
 > hardware this runs on. Flashing this firmware **replaces the stock firmware**. This
@@ -94,7 +94,7 @@ stock firmware cannot be saved, and flashing needs a mass erase first (`pyocd er
 ### 2. Flash
 
 ```bash
-pyocd flash -t stm32f103rc rly8-fw-v2.0.0-full.bin --base-address 0x08000000
+pyocd flash -t stm32f103rc rly8-fw-v2.1.0-full.bin --base-address 0x08000000
 pyocd reset -t stm32f103rc
 ```
 
@@ -108,7 +108,7 @@ connected, add `-u <probe UID>` (list them with `pyocd list`). With the `.hex` f
 1. Plug in Ethernet. The board asks for an address over DHCP.
 2. Open `http://rly8-xxxxxx.local/`, or look up the address in your router. You can also
    type `status` in the USB console.
-3. Log in as **admin / admin** and **change the password** under *Ustawienia* (Settings).
+3. Log in as **admin / admin** and **change the password** under *Settings*.
 
 If no DHCP server answers within 15 s, the board uses the fallback address
 **192.168.9.50/24**. You can change it in the panel.
@@ -117,10 +117,10 @@ If no DHCP server answers within 15 s, the board uses the fallback address
 
 ### Web panel
 
-The panel UI is in Polish:
+The web panel has two pages:
 
 - **Status**: link, IP, MQTT state and broker, 8 relay toggles, all-on/all-off, restart
-- **Ustawienia** (Settings): DHCP or static IP, host name, MQTT on/off, broker (empty =
+- **Settings**: DHCP or static IP, host name, MQTT on/off, broker (empty =
   autodetect), port, user, password, discovery prefix, device name, admin password,
   factory reset
 - `GET /api/status`: JSON `{"node","name","fw","ip","link","uptime","mqtt","relays":[…]}`
@@ -130,8 +130,8 @@ Saving settings writes flash and reboots the device.
 ### Updating the firmware (v2.0.0 and later)
 
 1. Download `rly8-fw-vX.Y.Z-update.bin` from Releases.
-2. Open *Ustawienia* (Settings), go to **Aktualizacja firmware** (Firmware update), pick the
-   file and press **Wgraj i uruchom ponownie** (Upload and restart).
+2. Open *Settings*, go to **Firmware update**, pick the file and press
+   **Upload and restart**.
 3. The upload takes about 3 s. The board then restarts. The bootloader installs the image
    while the blue LED is lit steadily for about 3 s. The panel is back after roughly 20 s.
    Settings are kept.
@@ -281,3 +281,230 @@ docs/          hardware findings, relay mapping, stock protocol notes
 MIT, see [LICENSE](LICENSE). Third-party components keep their own licenses: lwIP (BSD-3-Clause,
 in each source file) and the ST CMSIS device header (Apache-2.0). See
 [THIRD_PARTY.md](THIRD_PARTY.md).
+
+---
+
+## Polski
+
+*English version: [top of this page](#dfr0289-rly-8-open-firmware).*
+
+Firmware zastępczy dla 8-kanałowego sterownika przekaźników **DFRobot RLY-8 (DFR0289)**.
+Po wgraniu płytka działa jako urządzenie **MQTT dla Home Assistanta**. Ma **panel WWW**,
+**konsolę USB** i **przycisk przywracania ustawień fabrycznych**.
+
+> Projekt nie jest związany z firmą DFRobot. Wgranie firmware **zastępuje oryginalny**.
+> Jeśli chcesz mieć możliwość powrotu, zrób najpierw kopię (pkt 2.2).
+> Przekaźniki mogą przełączać napięcie sieciowe. Pracuj przy płytce odłączonej od sieci 230 V.
+
+![Płytka z zaznaczonym złączem SWD, USB-B, Ethernetem i przyciskiem DEFAULT](docs/img/board-overview.jpg)
+
+### 1. Co potrafi
+
+- 8 przełączników w Home Assistant **bez konfiguracji ręcznej** (MQTT discovery)
+- **autodetekcja brokera** w sieci (mDNS `_mqtt._tcp.local`, potem `homeassistant.local`)
+- panel WWW: stan, przełączanie przekaźników, ustawienia sieci i MQTT, hasło, reset fabryczny
+- konsola tekstowa po **USB** (gniazdo USB-B)
+- nazwa w sieci lokalnej: `http://rly8-xxxxxx.local/`
+- **przycisk DEFAULT** (5 s) przywraca ustawienia fabryczne
+- **niebieska dioda** pokazuje stan urządzenia
+- **aktualizacja firmware z przeglądarki** (od v2.0.0), ustawienia zostają zachowane
+- po włączeniu zasilania wszystkie przekaźniki są wyłączone
+
+### 2. Wgranie firmware
+
+#### 2.1. Potrzebne
+
+- programator **ST-Link** (wystarczy tani klon V2) i 4 przewody
+- komputer z [pyOCD](https://pyocd.io) (`pip install pyocd`)
+- plik **`rly8-fw-vX.Y.Z-full.bin`** z zakładki
+  [Releases](https://github.com/lsochanowski/DFR0289-RLY-8-Firmware/releases). Zawiera
+  bootloader i aplikację. Programator jest potrzebny tylko raz, kolejne wersje wgrywa się
+  przez panel WWW.
+
+#### Podłączenie programatora
+
+Złącze SWD jest u góry płytki, między przekaźnikami. Opis pinów jest na płytce:
+
+![Złącze SWD](docs/img/swd-header.jpg)
+
+| Pin na płytce | ST-Link |
+| --- | --- |
+| SWDIO | SWDIO |
+| SWCLK | SWCLK |
+| GND | GND |
+| +3.3V | 3.3V — nie podłączaj, jeśli płytka jest zasilana z PoE/DC |
+
+Płytkę zasil normalnie (PoE albo zasilacz DC).
+
+#### 2.2. Kopia oryginalnego firmware (zalecane)
+
+```bash
+pyocd cmd -t stm32f103rc -c "savemem 0x08000000 0x40000 rly8-oryginal.bin"
+```
+
+Jeśli odczyt zwraca błędy albo same zera, układ może mieć zabezpieczenie odczytu. Wtedy
+kopii nie da się zrobić, a przed wgraniem trzeba wykonać `pyocd erase --chip`.
+
+#### 2.3. Wgranie
+
+```bash
+pyocd flash -t stm32f103rc rly8-fw-v2.1.0-full.bin --base-address 0x08000000
+pyocd reset -t stm32f103rc
+```
+
+`stm32f103rc` to nie pomyłka. pyOCD nie ma wbudowanego profilu STM32F107, a algorytm
+zapisu jest taki sam dla całej rodziny F1. Przy kilku programatorach dodaj `-u <UID>`
+(lista: `pyocd list`).
+
+### 3. Pierwsze uruchomienie
+
+1. Podłącz kabel Ethernet. Płytka pobierze adres z DHCP.
+2. Otwórz `http://rly8-xxxxxx.local/`. Adres możesz też sprawdzić w routerze albo w konsoli
+   USB (`status`).
+3. Zaloguj się: **admin / admin**. **Od razu zmień hasło** w zakładce *Settings*.
+
+Gdy w sieci nie ma serwera DHCP, po 15 s płytka ustawia adres **192.168.9.50/24**.
+
+### 4. Home Assistant
+
+1. W Home Assistant zainstaluj broker MQTT (np. dodatek **Mosquitto**) i integrację **MQTT**.
+2. W panelu płytki (*Settings → MQTT*) zostaw pole **Broker puste** (autodetekcja).
+   Wpisz **użytkownika i hasło MQTT**, bo Mosquitto domyślnie nie wpuszcza anonimowych
+   klientów.
+3. **Save and restart**. Po chwili w HA pojawi się urządzenie z 8 przełącznikami.
+
+Stan połączenia widać w panelu (*Status → MQTT / Home Assistant*) i na diodzie.
+
+### 5. Panel WWW
+
+- **Status** — link, adres IP, stan MQTT i adres brokera, 8 przycisków przekaźników,
+  *All ON / All OFF*, restart.
+- **Settings** — DHCP lub adres statyczny (IP, maska, brama, DNS), nazwa hosta, MQTT
+  (włącz/wyłącz, broker, port, użytkownik, hasło, prefiks discovery), nazwa urządzenia w HA,
+  hasło panelu, przywrócenie ustawień fabrycznych.
+- Puste pole hasła oznacza „bez zmian”. Zapis zapamiętuje ustawienia i restartuje płytkę.
+- `http://<adres>/api/status` zwraca stan w JSON (np. do skryptów).
+
+### 6. Aktualizacja firmware (od v2.0.0)
+
+1. Pobierz `rly8-fw-vX.Y.Z-update.bin` z zakładki Releases.
+2. *Settings → Firmware update*: wybierz plik i kliknij **Upload and restart**.
+3. Wysyłanie trwa ok. 3 s. Potem płytka się restartuje, a bootloader instaluje nową wersję
+   (dioda świeci ok. 3 s). Panel wraca po ok. 20 s. Ustawienia zostają.
+
+Zabezpieczenia:
+- Złe pliki są odrzucane, a działający firmware zostaje nietknięty. Dotyczy to `-full.bin`,
+  plików z wersji 1.x i przypadkowych plików.
+- Zerwane wysyłanie niczego nie zmienia.
+- Po zaniku zasilania w trakcie instalacji bootloader powtarza ją przy następnym starcie.
+
+**Przejście z wersji 1.x:** v1 nie ma bootloadera, więc raz wgraj `-full.bin` programatorem
+(pkt 2). Ustawienia zostaną zachowane.
+
+### 7. Konsola USB
+
+Podłącz gniazdo USB-B do komputera. W systemie pojawi się port szeregowy:
+- macOS: `/dev/cu.usbmodem*`
+- Linux: `/dev/ttyACM*`
+- Windows: port COM
+
+Prędkość nie ma znaczenia.
+
+```bash
+screen /dev/cu.usbmodem* 115200
+```
+
+| Komenda | Działanie |
+| --- | --- |
+| `help` | lista komend |
+| `status` | sieć, MQTT, przekaźniki |
+| `show` | ustawienia (hasła ukryte) |
+| `set <klucz> <wartość>` | zmiana ustawienia (do `save`) |
+| `save` | zapis ustawień (działają po restarcie) |
+| `reboot` | restart |
+| `factory` | ustawienia fabryczne + restart |
+| `relay <1-8\|all> <on\|off\|toggle>` | sterowanie przekaźnikami |
+
+Klucze: `dhcp`, `ip`, `mask`, `gw`, `dns`, `hostname`, `name`, `mqtt`, `mqtt_host`,
+`mqtt_port`, `mqtt_user`, `mqtt_pass`, `mqtt_prefix`, `admin_pass`.
+
+Przykład — adres statyczny:
+
+```text
+set dhcp off
+set ip 192.168.1.50
+set mask 255.255.255.0
+set gw 192.168.1.1
+save
+reboot
+```
+
+### 8. Przycisk DEFAULT i dioda
+
+**Przytrzymaj DEFAULT przez 5 sekund**. Dioda zacznie szybko migać, potem zaświeci na stałe
+i płytka uruchomi się z ustawieniami fabrycznymi: DHCP, hasło `admin`, MQTT z autodetekcją.
+
+| Niebieska dioda | Znaczenie |
+| --- | --- |
+| krótki błysk co 2 s | brak kabla / linku Ethernet |
+| miga 2× na sekundę | link jest, czeka na adres IP |
+| podwójny błysk co sekundę | jest IP, brak połączenia z MQTT (np. złe hasło) |
+| świeci, mrugnie przy akcji | wszystko działa |
+| świeci ok. 3 s zaraz po aktualizacji | bootloader instaluje nowy firmware |
+| bardzo szybko miga bez końca, panel nie odpowiada | brak poprawnego firmware — wgraj `-full.bin` programatorem |
+
+### 9. Bezpieczeństwo
+
+- Panel działa po **HTTP bez szyfrowania**. Używaj go w zaufanej sieci i zmień hasło domyślne.
+- Hasła są zapisane w pamięci płytki **bez szyfrowania**.
+- **Konsola USB nie ma hasła**. Kto ma fizyczny dostęp, może zmienić ustawienia, tak jak
+  przyciskiem.
+- Pliki firmware **nie są podpisane**: kto zna hasło panelu, może wgrać dowolny obraz
+  w poprawnym formacie.
+
+### 10. Ograniczenia
+
+- Oryginalne protokoły DFRobot (JSON na porcie TCP 2000, ramki `55 AA` po RS485) nie są
+  jeszcze obsługiwane.
+- Stan przekaźników nie jest pamiętany po zaniku zasilania (start: wszystkie OFF).
+
+### 11. Sprzęt (zmierzone na płytce)
+
+| Element | Wartość |
+| --- | --- |
+| MCU | STM32F107RCT6 (Cortex-M3, 256 KB flash, 64 KB RAM) |
+| Zegar | oscylator HSE **25 MHz** → 72 MHz przez PLL2 |
+| PHY Ethernet | TI DP83848, adres MDIO 1, **MII**; PHY nie ma kwarcu — zegar z wyjścia **MCO (PA8)** procesora |
+| Przekaźniki 1–8 | PC8, PC9, PC10, PC11, PC12, PC7, PC6, PB15 (aktywne stanem wysokim) |
+| Niebieska dioda | PB7 (aktywna stanem niskim) |
+| Przycisk DEFAULT | PB14 (wciśnięty = 0) |
+| USB-B | natywne OTG FS (PA11/PA12); PA9 nie widzi VBUS, firmware wymusza go w stan wysoki |
+| Debug | złącze SWD: **SWDIO, SWCLK, GND, +3.3V** |
+
+Mapa flash (od v2):
+
+| Adres | Rozmiar | Zawartość |
+| --- | --- | --- |
+| `0x08000000` | 8 KB | bootloader |
+| `0x08002000` | 120 KB | aplikacja |
+| `0x08020000` | 120 KB | bufor na wgrywany obraz |
+| `0x0803E000` | 2 KB | znacznik aktualizacji |
+| `0x0803F000` | 4 KB | ustawienia (dwie kopie) |
+
+### 12. Budowanie ze źródeł
+
+Wymagane: `arm-none-eabi-gcc` (testowane z Arm GNU Toolchain 13.3), `make`, kompilator C
+na komputer (testy).
+
+```bash
+cd firmware
+make test       # testy jednostkowe na komputerze
+make full       # bootloader + aplikacja -> build/full.bin / full.hex
+make release    # dist/: -full.bin/-full.hex (SWD), -update.bin (panel), .elf, SHA256SUMS
+make flash      # wgranie przez pyOCD; STLINK_UID=<uid> wybiera programator
+```
+
+### 13. Licencja
+
+MIT (plik [LICENSE](LICENSE)). Komponenty zewnętrzne mają własne licencje: lwIP (BSD-3-Clause),
+nagłówki CMSIS od ST (Apache-2.0) — szczegóły w [THIRD_PARTY.md](THIRD_PARTY.md).

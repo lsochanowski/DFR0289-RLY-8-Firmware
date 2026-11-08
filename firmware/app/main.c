@@ -188,20 +188,20 @@ static void sync_relays(void) {
 
 static const char *mqtt_state_text(void) {
     if (!cfg.mqtt_enabled) {
-        return "wyłączone";
+        return "disabled";
     }
     if (!mqtt_started) {
-        return "oczekiwanie na broker";
+        return "waiting for broker";
     }
     switch (mqtt.state) {
     case RLY_MC_READY:
-        return "połączony";
+        return "connected";
     case RLY_MC_CONNECTING:
-        return "łączenie";
+        return "connecting";
     case RLY_MC_ERROR:
-        return "błąd połączenia (ponawiam)";
+        return "connection failed (retrying)";
     default:
-        return "bezczynny";
+        return "idle";
     }
 }
 

@@ -260,6 +260,9 @@ Co blokowało Ethernet (naprawione):
 → `cfg_loaded=1`, factory przyciskiem → strony flash `0xFF`, konsola USB enumeruje się jako
 `RLY-8 open firmware` (`0483:5740`), autodetekcja znalazła broker HA.
 
+**v2.1.0 (2026-11-08):** UI panelu i komunikaty po angielsku; README: angielski + polski niżej.
+Wgrane przez panel (OTA 2.0.0 → 2.1.0, 24 s), bez ST-Linka.
+
 **OTA (v2.0.0, zmierzone 2026-11-08):** upload 67 KB w 2,8 s, powrót z nową wersją po ~24 s;
 odrzucone: obraz v1, `full.bin`, losowy plik, zły token (403), złe hasło (401); zerwany upload
 nic nie zmienia; reset MCU w połowie kopiowania → bootloader powtarza instalację (znacznik

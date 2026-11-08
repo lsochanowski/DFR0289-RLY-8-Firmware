@@ -67,19 +67,19 @@ const char *rly_img_status_text(rly_img_status s) {
     case RLY_IMG_OK:
         return "ok";
     case RLY_IMG_TOO_SMALL:
-        return "plik za mały";
+        return "file too small";
     case RLY_IMG_TOO_BIG:
-        return "plik za duży";
+        return "file too large";
     case RLY_IMG_BAD_SP:
     case RLY_IMG_BAD_RESET:
     case RLY_IMG_BAD_MAGIC:
-        return "to nie jest plik aktualizacji RLY-8 (użyj *-update.bin)";
+        return "not an RLY-8 update file (use *-update.bin)";
     case RLY_IMG_BAD_SIZE:
-        return "plik niekompletny albo zmieniony";
+        return "file incomplete or modified";
     case RLY_IMG_BAD_CRC:
-        return "błąd sumy kontrolnej po zapisie";
+        return "checksum mismatch after writing";
     default:
-        return "błąd zapisu flash";
+        return "flash write error";
     }
 }
 

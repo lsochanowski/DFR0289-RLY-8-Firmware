@@ -143,7 +143,7 @@ static void on_mdns(void *arg, struct udp_pcb *pcb, struct pbuf *p, const ip_add
     if (state == D_NAME) {
         uint32_t ip = rly_mdns_lookup_a(&a, host);
         if (ip != 0u) {
-            found(ip, cfg_port, "nazwa .local (mDNS)");
+            found(ip, cfg_port, ".local name (mDNS)");
         }
     }
 }
@@ -182,12 +182,12 @@ static void begin(uint32_t now) {
     deadline = now + 1500u;
     if (autodetect) {
         state = D_PTR;
-        source = "autodetekcja…";
+        source = "autodetect…";
         pending_name = MQTT_SERVICE;
         pending_qtype = RLY_MDNS_TYPE_PTR;
         send_query_pending = 1;
     } else if (rly_parse_ipv4(host, &ip)) {
-        found(ip, cfg_port, "ręcznie (IP)");
+        found(ip, cfg_port, "manual (IP)");
     } else {
         size_t n = strlen(host);
         if (n > 6 && strcmp(host + n - 6, ".local") == 0) {
@@ -251,7 +251,7 @@ void discovery_poll(uint32_t now) {
     case D_NAME:
     case D_DNS:
         state = D_BACKOFF;
-        source = autodetect ? "autodetekcja: nie znaleziono brokera" : "nie rozwiązano nazwy";
+        source = autodetect ? "autodetect: no broker found" : "name not resolved";
         deadline = now + 10000u;
         break;
     case D_BACKOFF:

@@ -136,7 +136,7 @@ static void test_upload_auth(void) {
     expect_has("413", page, "413");
     n = rly_web_upload_result(RLY_IMG_OK, "2.0.0", page, sizeof page);
     page[n] = '\0';
-    expect_has("result ok", page, "wgrano wersję 2.0.0");
+    expect_has("result ok", page, "uploaded version 2.0.0");
     n = rly_web_upload_result(RLY_IMG_BAD_MAGIC, "", page, sizeof page);
     page[n] = '\0';
     expect_has("result wrong file", page, "update.bin");
@@ -198,12 +198,12 @@ static void test_web(void) {
     const char *bad_save = post("/save", AUTH_ADMIN, "t=tok123&dhcp=off&ip=1.2.3&mqtt_port=1");
     run(bad_save, &cfg, &st, &res);
     expect_has("save error 400", page, "400 Bad Request");
-    expect_has("error names field", page, "Błędne pole: ip");
+    expect_has("error names field", page, "Invalid field: ip");
     expect_int("config untouched on error", cfg.dhcp, 1);
 
     const char *mismatch = post("/save", AUTH_ADMIN, "t=tok123&admin_pass=s3cret&admin_pass2=other");
     run(mismatch, &cfg, &st, &res);
-    expect_has("password mismatch", page, "Hasła panelu się różnią");
+    expect_has("password mismatch", page, "Panel passwords do not match");
 
     const char *good = post("/save", AUTH_ADMIN, "t=tok123&dhcp=off&ip=10.0.0.9&mask=255.255.255.0&mqtt_host=&"
                        "mqtt_user=ha&mqtt_pass=&admin_pass=s3cret&admin_pass2=s3cret&mqtt=on");

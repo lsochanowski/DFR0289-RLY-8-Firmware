@@ -3,355 +3,370 @@
 Everything here was measured on the actual board over SWD, not copied from a reference
 design. If you change a fact, change it here too.
 
-Wartości konkretnego środowiska (UID sondy, adresy w sieci, ścieżki) trzymamy lokalnie w
-`AGENTS.local.md` — plik jest w `.gitignore`, repo jest publiczne.
+Environment-specific values (probe UID, network addresses, local paths) live in
+`AGENTS.local.md`, which is git-ignored. The repository is public: never commit such values.
 
-Cel projektu: zastąpić oryginalny firmware własnym tak, żeby 8-przekaźnikowy moduł działał
-w Home Assistant po MQTT (docelowo także po Ethernet/TCP:2000 jak oryginał).
+Goal: replace the stock firmware so the 8-relay board works in Home Assistant over MQTT
+(later also with the stock JSON protocol on Ethernet TCP:2000).
 
 ---
 
-## 1. Sprzęt — fakty ustalone pomiarami
+## 1. Hardware — facts established by measurement
 
-| Element | Wartość | Jak ustalone |
+| Item | Value | How it was established |
 | --- | --- | --- |
-| MCU | **STM32F107RCT6** (LQFP64, Cortex-M3 r1p1; oznaczenie z obudowy) | CPUID `0x411FC231`, DBGMCU_IDCODE `0x10016418` → DEV_ID `0x418` |
+| MCU | **STM32F107RCT6** (LQFP64, Cortex-M3 r1p1; package marking) | CPUID `0x411FC231`, DBGMCU_IDCODE `0x10016418` → DEV_ID `0x418` |
 | Flash / RAM | 256 KB / 64 KB | `0x1FFFF7E0` = `0x0100`, initial SP `0x20010000` |
-| RDP | poziom 0 (brak ochrony) | option bytes `0x1FFFF800` = `0x00FF5AA5` |
-| HSE | **25 MHz** (oscylator 4-pad między MCU a PHY) | DWT_CYCCNT przy `SW=HSE` = 25,00 MHz (2026-11-07) |
-| SYSCLK | **72 MHz**: 25 /5 (PREDIV2) ×8 (PLL2) /5 (PREDIV1) ×9 (PLL) | DWT_CYCCNT = 72,00 MHz. Stare „HSE 8 MHz ×9” dawało ~139 MHz (PLL w saturacji) |
-| **Zegar PHY** | **X1 DP83848 z MCO = PA8**, PHY nie ma własnego kwarcu | bez MCO: MDIO działa, ale zero sygnału na linii; MCO=HSE → link 100M FD |
-| Tryb ETH | **MII** (strap PHY, `RBR=0x0001`); MCO = HSE 25 MHz | DHCP + ping 300/300 (2026-11-07) |
-| **PLL z HSI/2 nie lockuje** | — | próba HSI/2 ×16 nie dała `PLLRDY`; zawsze używać HSE |
-| PHY Ethernet | **TI DP83848AA**, adres MDIO **1** | odczyt ID `0x2000:0x5C90` + `eth_init()` w firmware |
-| Unikalny ID | 96 bit, inny w każdym egzemplarzu (z niego liczony jest MAC) | `0x1FFFF7E8..F0` |
+| RDP | level 0 (no read protection) | option bytes `0x1FFFF800` = `0x00FF5AA5` |
+| HSE | **25 MHz** (4-pad oscillator between the MCU and the PHY) | DWT_CYCCNT with `SW=HSE` = 25.00 MHz (2026-11-07) |
+| SYSCLK | **72 MHz**: 25 /5 (PREDIV2) ×8 (PLL2) /5 (PREDIV1) ×9 (PLL) | DWT_CYCCNT = 72.00 MHz. The old "HSE 8 MHz ×9" setting ran at ~139 MHz (PLL saturated) |
+| **PHY clock** | **DP83848 X1 comes from MCO = PA8**; the PHY has no crystal of its own | without MCO: MDIO works but nothing on the wire; MCO=HSE → 100M FD link |
+| ETH mode | **MII** (PHY strap, `RBR=0x0001`); MCO = HSE 25 MHz | DHCP + ping 300/300 (2026-11-07) |
+| **PLL from HSI/2 does not lock** | — | HSI/2 ×16 never set `PLLRDY`; always use HSE |
+| Ethernet PHY | **TI DP83848AA**, MDIO address **1** | ID read `0x2000:0x5C90` + `eth_init()` in the firmware |
+| Unique ID | 96 bit, different on every unit (the MAC is derived from it) | `0x1FFFF7E8..F0` |
 
-### Mapa przekaźników (KOMPLETNA, potwierdzona obserwacją)
+### Relay map (COMPLETE, confirmed by observation)
 
-| Przekaźnik | Pin | | Przekaźnik | Pin |
+| Relay | Pin | | Relay | Pin |
 | --- | --- | --- | --- | --- |
 | 1 | **PC8** | | 5 | **PC12** |
 | 2 | **PC9** | | 6 | **PC7** |
 | 3 | **PC10** | | 7 | **PC6** |
 | 4 | **PC11** | | 8 | **PB15** |
 
-Wszystkie kanały **aktywne stanem wysokim**. Dwie osobliwości: 6 i 7 są **zamienione**
-względem naturalnej kolejności PC6/PC7, a relay 8 siedzi samotnie na porcie B (PB15).
-Szczegóły i przebiegi: `docs/relay-mapping.md`.
+All channels are **active high**. Two quirks: relays 6 and 7 are **swapped** relative to the
+natural PC6/PC7 order, and relay 8 sits alone on port B (PB15).
+Details and test runs: `docs/relay-mapping.md`.
 
-### Interfejs użytkownika i USB (zmierzone 2026-11-07/08)
+### User interface and USB (measured 2026-11-07/08)
 
-| Element | Pin | Jak ustalone |
+| Item | Pin | How it was established |
 | --- | --- | --- |
-| **Niebieska dioda** | **PB7, aktywna stanem niskim** | bisekcja miganiem grup pinów przez SWD + obserwacja |
-| **Przycisk DEFAULT** | **PB14, wciśnięty = 0** (pull-up wewnętrzny) | podsłuch IDR przez SWD przy 3 wciśnięciach |
-| USB-B | natywne OTG FS, PA11/PA12 | sterownik w zipie = ST VCP (`0483:5740`) |
-| **VBUS na PA9** | **brak** — PA9 ściągnięty do masy na płytce | z kablem PA9=0 nawet z pull-upem; `BSVLD=0` |
+| **Blue LED** | **PB7, active low** | bisection by blinking pin groups over SWD + observation |
+| **DEFAULT button** | **PB14, pressed = 0** (internal pull-up) | IDR polled over SWD during 3 presses |
+| USB-B | native OTG FS, PA11/PA12 | the vendor driver zip = ST VCP (`0483:5740`) |
+| **VBUS on PA9** | **none** — PA9 is pulled to ground on the board | with the cable plugged in PA9=0 even with the pull-up; `BSVLD=0` |
 
-USB działa tylko z obejściem: firmware ustawia **PA9 jako wyjście w stanie wysokim**
-(`USB_NO_VBUS_SENSE=1`, domyślne w `usb_cdc.c`). Skutek: brak wykrywania odłączenia kabla
-(host i tak robi reset przy ponownym wpięciu).
+USB works only with a workaround: the firmware drives **PA9 as an output, high**
+(`USB_NO_VBUS_SENSE=1`, default in `usb_cdc.c`). Consequence: cable removal is not detected
+(the host resets the device on re-plug anyway).
 
-### Piny, których NIE WOLNO sterować
+### Pins that MUST NOT be driven
 
-- **PA13 / PA14** — SWDIO/SWCLK. Sterowanie nimi zrywa debugger i wtedy każdy odczyt RAM
-  jest śmieciem (na tym się już raz przewróciliśmy).
-- **PA2 / PC1** — MDIO / MDC (alternate function dla ETH).
-- **PC6–PC12, PB15** — przekaźniki; w sondach diagnostycznych wykluczać, żeby nie klikać
-  cewkami i nie wywoływać zapadów zasilania.
+- **PA13 / PA14** — SWDIO/SWCLK. Driving them kills the debugger, and every RAM read after
+  that is garbage (this already bit us once).
+- **PA2 / PC1** — MDIO / MDC (Ethernet alternate function).
+- **PC6–PC12, PB15** — relays; exclude them in diagnostic probes so the coils do not click
+  and do not cause supply dips.
 
 ---
 
-## 2. Wgrywanie i debug (SWD)
+## 2. Flashing and debugging (SWD)
 
-Probe: ST-Link (UID własnej sondy: `pyocd list`; lokalnie w `AGENTS.local.md`, poza repo). **Nie ma ROM DFU/BOOT0 — działa SWD.**
+Probe: ST-Link (your probe UID: `pyocd list`; locally in `AGENTS.local.md`, outside the
+repo). **There is no ROM DFU/BOOT0 path — use SWD.**
 
 ```bash
-cd firmware && make flash STLINK_UID=$STLINK_UID   # bootloader + aplikacja (build/full.hex)
+cd firmware && make flash STLINK_UID=$STLINK_UID   # bootloader + application (build/full.hex)
 ```
 
-**Od v2 aplikacja jest linkowana pod `0x08002000`** (za 8 KB bootloadera, `port/f107/app.ld`).
-Samego `app.elf` nie wgrywać na czysty chip bez bootloadera — używać `make flash` (full.hex).
-Mapa flash i protokół aktualizacji: `core/rly_ota.h`. Sondy diagnostyczne (`port/probe/f107.ld`)
-nadal linkują się od `0x08000000` i nadpisują bootloader.
+**Since v2 the application is linked at `0x08002000`** (behind the 8 KB bootloader,
+`port/f107/app.ld`). Never flash `app.elf` alone onto a chip without the bootloader; use
+`make flash` (full.hex). Flash map and update protocol: `core/rly_ota.h`. Diagnostic probes
+(`port/probe/f107.ld`) still link at `0x08000000` and overwrite the bootloader.
 
-- `-t stm32f103rc` (nie `stm32f107…`) — pyOCD nie ma wbudowanego targetu F107, a algorytm
-  flashowania F1 jest wspólny i rozmiar 256 KB się zgadza.
-- **Po każdym `flash` zrób `reset`** — jeśli obraz był identyczny, pyOCD nic nie zapisze
-  („identical N bytes") i firmware **nie ruszy od nowa**.
-- Odczyt rejestrów/pamięci:
+Updates without a probe: web panel *Settings → Firmware update* with `dist/*-update.bin`
+(or `curl -u admin:<pass> --data-binary @app.bin "http://<ip>/update?t=<token>"`; the token
+is in the settings page source).
+
+- `-t stm32f103rc` (not `stm32f107…`) — pyOCD has no built-in F107 target; the F1 flash
+  algorithm is shared and the 256 KB size matches.
+- **Always `reset` after `flash`** — if the image is identical, pyOCD writes nothing
+  ("identical N bytes") and the firmware **does not restart**.
+- Reading registers/memory:
   ```bash
   PYTHONPATH=work/toolchain/py python3 -m pyocd cmd -u <UID> -t cortex_m \
     -c "read32 0xE000ED28" -c "savemem 0x20000830 0x54 work/bs.bin"
   ```
+- SWD reads during a flash erase fail with "DP wait" (the bus is stalled) — in test scripts
+  treat that as "the bootloader is working", not as an error.
 
-### `boot_status` — raport startowy firmware (czytaj po SWD)
+### `boot_status` — firmware status report (read it over SWD)
 
-Adres **zmienia się przy każdej zmianie layoutu** — bierz go z obrazu:
+The address **changes with every layout change** — take it from the image:
 
 ```bash
-cd firmware && arm-none-eabi-nm build/app.elf | grep boot_status   # np. 0x20000830
+cd firmware && arm-none-eabi-nm build/app.elf | grep boot_status   # e.g. 0x20000b0c
 ```
 
-Kolejność pól (`uint32_t`, little-endian):
+Field order (`uint32_t`, little-endian):
 
-| # | pole | znaczenie |
+| # | field | meaning |
 | --- | --- | --- |
-| 0 | magic | `0x524C5931` („RLY1") |
-| 1 | clock_result | 0 = HSE 72 MHz OK |
-| 2 | relays_mapped | powinno być 8 |
-| 3 | sequence_done | `0x444F4E45` („DONE") |
-| 4 | eth_init_result | 0 = PHY znaleziony i skonfigurowany |
+| 0 | magic | `0x524C5931` ("RLY1") |
+| 1 | clock_result | 0 = 72 MHz from HSE OK |
+| 2 | relays_mapped | should be 8 |
+| 3 | sequence_done | `0x444F4E45` ("DONE") |
+| 4 | eth_init_result | 0 = PHY found and configured |
 | 5 | phy_address | 1 = DP83848AA |
-| 6 | link_up | 1 = link fizyczny |
-| 7 | bmsr | rejestr 0x01 PHY |
-| 8 | physts | rejestr 0x10 PHY |
-| 9 | poll_count | licznik pętli |
-| 10 | eth_dma_result | 0 = MAC+DMA wystartowały |
-| 11 | netif_up | 1 = lwIP netif podniesiony |
-| 12 | dhcp_started | 1 = DHCP uruchomiony (wymaga linku) |
-| 13 | ip_addr | adres IPv4 (0 = brak) |
-| 14 | rx_frames | licznik odebranych ramek |
-| 15 | tx_frames | licznik wysłanych ramek |
-| 16 | up_ms | ms od startu (dowód, że SysTick działa) |
+| 6 | link_up | 1 = physical link |
+| 7 | bmsr | PHY register 0x01 |
+| 8 | physts | PHY register 0x10 |
+| 9 | poll_count | main loop counter |
+| 10 | eth_dma_result | 0 = MAC+DMA started |
+| 11 | netif_up | 1 = lwIP netif up |
+| 12 | dhcp_started | 1 = DHCP started (needs a link) |
+| 13 | ip_addr | IPv4 address (0 = none) |
+| 14 | rx_frames | received frames |
+| 15 | tx_frames | sent frames |
+| 16 | up_ms | ms since boot (proves SysTick runs) |
 | 17 | mqtt_state | 0 idle, 1 connecting, 2 ready, 3 error |
-| 18 | mqtt_commands | ile komend z MQTT zastosowano |
-| 19 | relay_mask | aktualny stan przekaźników (bit0 = relay 1) |
-| 20 | static_ip | 1 = użyto adresu zapasowego `192.168.9.50/24` |
-| 21 | bmcr | rejestr 0x00 PHY (bit11 power-down, bit10 isolate) |
-| 22 | rbr | rejestr 0x17 PHY (bit5 = tryb RMII) |
-| 23 | phyctrl | rejestr 0x19 PHY |
-| 24 | cfg_loaded | 1 = konfiguracja z flash, 0 = fabryczna |
-| 25 | http_requests | liczba obsłużonych żądań HTTP |
-| 26 | usb_configured | 1 = host skonfigurował USB CDC |
-| 27 | broker_ip | adres brokera MQTT (po autodetekcji/DNS) |
+| 18 | mqtt_commands | MQTT commands applied |
+| 19 | relay_mask | current relay state (bit0 = relay 1) |
+| 20 | static_ip | 1 = fallback/static address in use after DHCP timeout |
+| 21 | bmcr | PHY register 0x00 (bit11 power-down, bit10 isolate) |
+| 22 | rbr | PHY register 0x17 (bit5 = RMII mode) |
+| 23 | phyctrl | PHY register 0x19 |
+| 24 | cfg_loaded | 1 = config from flash, 0 = factory defaults |
+| 25 | http_requests | HTTP requests served |
+| 26 | usb_configured | 1 = host configured the USB CDC device |
+| 27 | broker_ip | MQTT broker address (after autodetect/DNS) |
 
-Liczniki USB: symbol `usb_cdc_stats` (irqs, resets, enum_done, setups, stalls, …).
+USB counters: symbol `usb_cdc_stats` (irqs, resets, enum_done, setups, stalls, …).
 
 ---
 
-## 3. Firmware — architektura i budowanie
+## 3. Firmware — architecture and build
 
 ```
 firmware/
-  core/            # przenośne, testowane na hoście (bez sprzętu)
-    rly_frame.c    # ramka 55 AA + CRC = suma 8-bit (protokół RS485/USB oryginału)
-    rly_json.c     # dialekt JSON oryginału (TCP:2000)
-    rly_ha.c       # payloady MQTT discovery dla Home Assistant
-    rly_mqtt.c     # pakiety MQTT 3.1.1 (CONNECT/PUBLISH/SUBSCRIBE + parser)
-    rly_session.c  # sesja: CONNACK → discovery → stany → komendy
-    rly_mqtt_client.c # klient nieblokujący: backoff, keepalive, reconnect
-    rly_config.c   # konfiguracja: struktura, CRC32, walidacja klucz=wartość (WWW + konsola)
-    rly_http.c     # parser HTTP, formularze, Basic Auth, escapowanie HTML
-    rly_web.c      # panel WWW: strony, /save, /relay, /factory, /api/status, token CSRF
-    rly_console.c  # konsola tekstowa (help/status/show/set/save/relay/reboot/factory)
-    rly_mdns.c     # mDNS: zapytania PTR/A, parser odpowiedzi, odpowiedź A dla <host>.local
-    rly_ota.c      # OTA: walidacja obrazu, zapis strumieniowy, decyzja i instalacja bootloadera
+  core/            # portable, unit-tested on the host (no hardware)
+    rly_frame.c    # 55 AA frame + CRC = 8-bit sum (stock RS485/USB protocol)
+    rly_json.c     # stock JSON dialect (TCP:2000)
+    rly_ha.c       # Home Assistant MQTT discovery payloads
+    rly_mqtt.c     # MQTT 3.1.1 packets (CONNECT/PUBLISH/SUBSCRIBE + parser)
+    rly_session.c  # session: CONNACK → discovery → states → commands
+    rly_mqtt_client.c # non-blocking client: back-off, keepalive, reconnect
+    rly_config.c   # config: struct, CRC32, key=value validation (web + console)
+    rly_http.c     # HTTP parser, forms, Basic auth, HTML escaping
+    rly_web.c      # web panel: pages, /save, /relay, /factory, /update, /api/status, CSRF token
+    rly_console.c  # text console (help/status/show/set/save/relay/reboot/factory)
+    rly_mdns.c     # mDNS: PTR/A queries, response parser, A answer for <host>.local
+    rly_ota.c      # OTA: image validation, streaming writer, bootloader decision and install
     rly_crc.c      # CRC-32
-    rly_version.h  # jedyne źródło numeru wersji
-    test_*.c       # testy hostowe
-  port/f107/       # warstwa sprzętowa
-    board.h        # MCU, zegary, GPIO
-    clock.c        # HSE → 72 MHz
-    relay.c        # driver przekaźników (mapa pinów w jednym miejscu)
-    eth.c          # PHY: piny, MDIO, autoneg, link, RMII (AFIO_MAPR bit23)
-    eth_dma.c      # MAC + DMA, ringi RX×4 / TX×2, deskryptory
-    ethernetif.c   # glue lwIP (polling, bufory statyczne)
-    tcp_stream.c   # rly_stream na gnieździe TCP lwIP (dla klienta MQTT)
-    flash.c        # kasowanie/programowanie flash (wspólne: konfiguracja, OTA, bootloader)
-    flash_cfg.c    # konfiguracja w 2 ostatnich stronach flash (A/B, 0x0803F000/F800)
-    app.ld         # linker aplikacji: 0x08002000, nagłówek obrazu pod +0x200
-    httpd.c        # serwer HTTP na raw API lwIP (2 sloty + kolejka 4 połączeń)
-    discovery.c    # mDNS responder + autodetekcja brokera (_mqtt._tcp, homeassistant.local), DNS
-    usb_cdc.c      # USB OTG FS device, CDC-ACM (konsola), przerwanie IRQ 67
-    ui.c           # dioda PB7 (wzorce stanu) + przycisk PB14 (5 s = factory)
-    systick.c      # 1 ms tick + sys_now() dla lwIP
-    lwip/arch/     # cc.h, sys_arch.h, sys_arch.c (critical sections na PRIMASK)
-    ../probe/      # programy diagnostyczne (patrz §6)
+    rly_version.h  # single source of the version number
+    test_*.c       # host tests
+  port/f107/       # hardware layer
+    board.h        # MCU, clocks, GPIO
+    clock.c        # HSE 25 MHz → 72 MHz, MCO for the PHY
+    relay.c        # relay driver (pin map in one place)
+    eth.c          # PHY: pins, MDIO, autoneg, link, MII/RMII (AFIO_MAPR bit 23)
+    eth_dma.c      # MAC + DMA, RX×4 / TX×2 rings, descriptors, zero-copy helpers
+    ethernetif.c   # lwIP glue (polling)
+    tcp_stream.c   # rly_stream on an lwIP TCP socket (for the MQTT client)
+    flash.c        # flash erase/program (shared: config, OTA, bootloader)
+    flash_cfg.c    # config in the last 2 flash pages (A/B, 0x0803F000/F800)
+    app.ld         # application linker script: 0x08002000, image header at +0x200
+    httpd.c        # HTTP server on the lwIP raw API (2 slots + queue of 4, streamed upload)
+    discovery.c    # mDNS responder + broker autodetect (_mqtt._tcp, homeassistant.local), DNS
+    usb_cdc.c      # USB OTG FS device, CDC-ACM (console), IRQ 67
+    ui.c           # LED PB7 (state patterns) + button PB14 (5 s = factory reset)
+    systick.c      # 1 ms tick + sys_now() for lwIP
+    lwip/arch/     # cc.h, sys_arch.h, sys_arch.c (critical sections via PRIMASK, LWIP_RAND)
+    ../probe/      # diagnostic programs (see §6)
   app/
-    startup.c      # tabela wektorów (desygnowane indeksy!) + reset handler
+    startup.c      # vector table (designated indices!), image header, VTOR, reset handler
     main.c         # boot: config → clock → relays → systick → LED/USB → PHY → MAC/DMA → lwIP
-                   #       → WWW, mDNS, MQTT; obsługa akcji (zapis, restart, factory)
-  boot/            # bootloader (8 KB; boot.c + boot.ld), logika w core/rly_ota.c
+                   #       → web, mDNS, MQTT; actions (save, restart, factory, OTA upload)
+  boot/            # bootloader (8 KB; boot.c + boot.ld), logic in core/rly_ota.c
   third_party/
-    lwip/          # lwIP 2.2.0 (tylko potrzebne katalogi) + lwipopts.h projektu
-    cmsis/         # stm32f107xc.h (definicje rejestrów, źródło nazw bitów)
+    lwip/          # lwIP 2.2.0 (only the needed directories) + the project's lwipopts.h
+    cmsis/         # stm32f107xc.h (register definitions, source of bit names)
 ```
 
-### Komendy
+### Commands
 
 ```bash
 cd firmware
 
-make test          # 9 zestawów testów hostowych (~372 sprawdzenia) — musi być zielone
-make full          # bootloader + aplikacja → build/full.bin/.hex
-make release       # dist/: -full.bin/-full.hex (SWD), -update.bin (panel), .elf, SHA256SUMS
-make port-layer    # kompilacja warstwy port/f107 (bez linkowania)
-make app           # pełny firmware: app + port + core + lwIP  → build/app.elf
-make probe-*       # programy diagnostyczne (patrz §6)
+make test          # 9 host test suites (~372 checks) — must be green
+make app           # application: app + port + core + lwIP → build/app.elf
+make full          # bootloader + application → build/full.bin/.hex
+make release       # dist/: -full.bin/-full.hex (SWD), -update.bin (web panel), .elf, SHA256SUMS
+make flash         # pyOCD, flashes build/full.hex (STLINK_UID=<uid> picks the probe)
+make port-layer    # compile the port/f107 layer (no link)
+make probe-*       # diagnostic programs (see §6)
 ```
 
-Aktualny obraz: **text 63 833 B, data 20 B, bss 54 336 B** (RAM ~54 KB z 64 KB, ~10 KB na
-stos). Link z `--gc-sections`, mapa w `build/app.map`. Flash: `LENGTH = 252K` — ostatnie
-4 KB to strony konfiguracji (pyOCD flash ich nie rusza, bo kasuje tylko sektory obrazu).
-Toolchain: `work/toolchain/arm-gnu-toolchain-13.3.rel1-.../bin/arm-none-eabi-gcc` (13.3.1),
-pyOCD 0.46.1 w `work/toolchain/py`. `brew` jest bezużyteczny — sandbox blokuje zapis poza
-workspace.
+Image (v2.1.0): **app text 67 137 B, data 20 B, bss 55 276 B** (RAM ~55 KB of 64 KB, ~9 KB
+for the stack); bootloader 1.3 KB. Linked with `--gc-sections`, map in `build/app.map`.
+pyOCD erases only the sectors of the image, so the config pages at the end of flash survive.
+Toolchain: `work/toolchain/arm-gnu-toolchain-13.3.rel1-.../bin/arm-none-eabi-gcc` (13.3.1;
+otherwise `arm-none-eabi-gcc` from PATH), pyOCD 0.46.1 in `work/toolchain/py`. `brew` is
+useless here — the sandbox blocks writes outside the workspace.
 
-### Konfiguracja urządzenia (runtime, nie w buildzie)
+### Device configuration (runtime, not build time)
 
-Trzymana we flash (A/B + CRC32, nowsza ważna kopia wygrywa). Zmieniana przez:
-- **panel WWW** `http://<ip>/` albo `http://rly8-xxxxxx.local/` — login **admin**, hasło
-  domyślnie **admin**; Status (przekaźniki), Ustawienia (sieć, MQTT, hasło), `/api/status` (JSON),
-- **konsolę USB** (`/dev/cu.usbmodem*`, dowolna prędkość): `help`, `status`, `show`,
-  `set <klucz> <wartość>`, `save`, `reboot`, `factory`, `relay <1-8|all> <on|off|toggle>`.
+Stored in flash (A/B + CRC32, the newer valid copy wins). Changed through:
+- the **web panel** `http://<ip>/` or `http://rly8-xxxxxx.local/` — login **admin**, password
+  **admin** by default; Status (relays), Settings (network, MQTT, password, firmware update),
+  `/api/status` (JSON). The UI is in English (since 2.1.0).
+- the **USB console** (`/dev/cu.usbmodem*`, any baud rate): `help`, `status`, `show`,
+  `set <key> <value>`, `save`, `reboot`, `factory`, `relay <1-8|all> <on|off|toggle>`.
 
-Klucze: `dhcp ip mask gw dns hostname name mqtt mqtt_host mqtt_port mqtt_user mqtt_pass
-mqtt_prefix admin_pass`. Wartości fabryczne: DHCP, zapasowy/statyczny `192.168.9.50/24`,
-MQTT włączone, **`mqtt_host` pusty = autodetekcja**, port 1883, prefiks `homeassistant`,
-hasło `admin`. **Factory reset**: przycisk DEFAULT 5 s, `factory` w konsoli albo przycisk w panelu.
+Keys: `dhcp ip mask gw dns hostname name mqtt mqtt_host mqtt_port mqtt_user mqtt_pass
+mqtt_prefix admin_pass`. Factory defaults: DHCP, fallback/static `192.168.9.50/24`,
+MQTT on, **empty `mqtt_host` = autodetect**, port 1883, prefix `homeassistant`, password
+`admin`. **Factory reset**: DEFAULT button for 5 s, `factory` in the console, or the panel.
 
-Autodetekcja brokera (pusty `mqtt_host`): mDNS PTR `_mqtt._tcp.local` (SRV → host+port),
-potem `homeassistant.local` (A) z portem z konfiguracji; ponowienie co 10 s. Nazwa `*.local`
-→ mDNS A; inna nazwa → DNS (serwer z DHCP lub `dns`). Zmierzone w sieci domowej:
-`homeassistant.local` znaleziony, broker wymaga loginu (CONNACK rc=5 bez danych).
+Broker autodetect (empty `mqtt_host`): mDNS PTR `_mqtt._tcp.local` (SRV → host+port), then
+`homeassistant.local` (A) with the configured port; retried every 10 s. A `*.local` name →
+mDNS A; any other name → DNS (server from DHCP or `dns`). Measured on a home network:
+`homeassistant.local` found, the broker requires a login (CONNACK rc=5 without credentials).
 
-Dioda: brak linku = krótki błysk co 2 s; link bez IP = 2 Hz; IP, MQTT nie gotowe = podwójny
-błysk co 1 s; wszystko OK = świeci, gaśnie na chwilę przy aktywności; przycisk trzymany =
-szybkie miganie, po 5 s ciągłe światło i restart.
+LED: no link = short flash every 2 s; link without IP = 2 Hz; IP but MQTT not ready = double
+flash every second; all good = on, briefly off on activity; button held = fast flicker, after
+5 s steady and restart. Bootloader: steady while installing; ~8 Hz forever = no valid app.
 
-Tematy (HA MQTT discovery): `<prefix>/switch/<node>/relay<N>/config`,
+Topics (HA MQTT discovery): `<prefix>/switch/<node>/relay<N>/config`,
 `<node>/relay<N>/set` (`ON`/`OFF`), `<node>/relay<N>/state` (retained),
-`<node>/status` (`online`/`offline`, retained will). `node` = `hostname` albo
-`rly8-<3 ostatnie bajty MAC>`. Discovery zawiera `cu` (link do panelu na stronie urządzenia w HA).
+`<node>/status` (`online`/`offline`, retained will). `node` = `hostname` or
+`rly8-<last 3 MAC bytes>`. Discovery includes `cu` (link to the panel on the HA device page).
 
 ---
 
-## 4. Protokół oryginału (do odtworzenia — `docs/protocol.md`)
+## 4. Stock protocol (to be reproduced — `docs/protocol.md`)
 
-- **JSON po TCP:2000**: `{"get":"relayStatus"}`, `{"relayN":"on"}`, `{"get":"netconfig"}`,
-  `{"dhcp":"on"}`, `{"reboot":"1"}`; odpowiedzi `{"resp":"ok"|"error"|"unsupported"}`.
-- **Ramki binarne (USB CDC / RS485)**: `55 AA | addr | len | cmd | data[len] | crc`,
-  **crc = suma 8-bit** wszystkich poprzedzających bajtów (zweryfikowane na 5 przykładach
-  z datasheetu). Kody `cmd` nieudokumentowane w hex: nazwa, wersja, DHCP, restart.
-- Zaimplementowane i przetestowane: `core/rly_frame.c`, `core/rly_json.c`.
-
----
-
-## 5. Stan: co działa, co nie
-
-**Działa (zmierzone 2026-11-07):** zegar 72 MHz (DWT), 8/8 przekaźników, PHY pod MDIO=1,
-**link 100 Mb/s full-duplex** (`physts=0x0715`), MAC+DMA w MII, lwIP, **DHCP** (adres
-w sieci switcha), **ping 300/300 bez strat** (także 1400 B).
-
-Co blokowało Ethernet (naprawione):
-1. **Brak zegara PHY** — X1 DP83848 jest podłączony do PA8/MCO; firmware nie włączał MCO.
-   PHY odpowiadał po MDIO, ale nie nadawał (`physts` bez „signal detect”, Mac `inactive`).
-   Fix: `clock_phy_mco()` w `port/f107/clock.c`, wołane z `eth_init()`.
-2. **Zły zegar MCU** — HSE to 25 MHz, nie 8 MHz; PLL ×9 → ~139 MHz. Fix: łańcuch PLL2.
-3. **Tryb RMII wymuszany na PHY** strapowanym na MII — teraz domyślnie `ETH_MODE_MII=1`
-   (wejścia MII CRS/COL/RX_ER/TX_CLK jako input). RMII alternatywnie: `-DETH_MODE_MII=0`
-   (MCO = PLL3 50 MHz; link wstaje też w RMII, ścieżka danych RMII nie testowana).
-4. **lwIP nie wysyłał** — brak `netif_set_link_up()`; teraz `main.c` śledzi link PHY.
-5. **Deskryptory DMA** — dodane `TCH`/`RCH` (tryb łańcuchowy), RX czytany po kolei.
-
-**Panel WWW, konsola USB, konfiguracja we flash, mDNS, przycisk, dioda — działają
-(zmierzone 2026-11-08):** 6 równoległych żądań HTTP OK (max 0,48 s), zapis ustawień → restart
-→ `cfg_loaded=1`, factory przyciskiem → strony flash `0xFF`, konsola USB enumeruje się jako
-`RLY-8 open firmware` (`0483:5740`), autodetekcja znalazła broker HA.
-
-**v2.1.0 (2026-11-08):** UI panelu i komunikaty po angielsku; README: angielski + polski niżej.
-Wgrane przez panel (OTA 2.0.0 → 2.1.0, 24 s), bez ST-Linka.
-
-**OTA (v2.0.0, zmierzone 2026-11-08):** upload 67 KB w 2,8 s, powrót z nową wersją po ~24 s;
-odrzucone: obraz v1, `full.bin`, losowy plik, zły token (403), złe hasło (401); zerwany upload
-nic nie zmienia; reset MCU w połowie kopiowania → bootloader powtarza instalację (znacznik
-`OTAP` zostaje, slot aplikacji był skasowany) → nowa wersja wstaje; ustawienia przetrwały OTA.
-
-**Otwarte:** MQTT `mqtt_state=3` — broker HA wymaga loginu; wpisać `mqtt_user`/`mqtt_pass`
-w panelu i sprawdzić 8 przełączników w HA.
+- **JSON over TCP:2000**: `{"get":"relayStatus"}`, `{"relayN":"on"}`, `{"get":"netconfig"}`,
+  `{"dhcp":"on"}`, `{"reboot":"1"}`; responses `{"resp":"ok"|"error"|"unsupported"}`.
+- **Binary frames (USB CDC / RS485)**: `55 AA | addr | len | cmd | data[len] | crc`,
+  **crc = 8-bit sum** of all preceding bytes (verified on 5 datasheet examples). Some `cmd`
+  codes are not documented in hex: name, version, DHCP, restart.
+- Implemented and tested, not wired to TCP/RS485 yet: `core/rly_frame.c`, `core/rly_json.c`.
 
 ---
 
-## 6. Programy diagnostyczne (`firmware/port/probe/`)
+## 5. Status: what works, what does not
 
-| cel | komenda |
+**Works (measured 2026-11-07):** 72 MHz clock (DWT), 8/8 relays, PHY at MDIO=1,
+**100 Mb/s full-duplex link** (`physts=0x0715`), MAC+DMA in MII, lwIP, **DHCP** (address on
+the switch network), **ping 300/300 without loss** (also 1400 B).
+
+What blocked Ethernet (fixed):
+1. **No PHY clock** — DP83848 X1 is wired to PA8/MCO; the firmware never enabled MCO.
+   The PHY answered over MDIO but did not transmit (`physts` without "signal detect", the
+   link partner stayed `inactive`). Fix: `clock_phy_mco()` in `port/f107/clock.c`, called
+   from `eth_init()`.
+2. **Wrong MCU clock** — HSE is 25 MHz, not 8 MHz; PLL ×9 → ~139 MHz. Fix: PLL2 chain.
+3. **RMII forced on a PHY strapped for MII** — now `ETH_MODE_MII=1` by default (MII inputs
+   CRS/COL/RX_ER/TX_CLK as inputs). RMII as an alternative: `-DETH_MODE_MII=0` (MCO = PLL3
+   50 MHz; the link also comes up in RMII, the RMII data path is untested).
+4. **lwIP sent nothing** — `netif_set_link_up()` was missing; `main.c` now tracks the PHY link.
+5. **DMA descriptors** — added `TCH`/`RCH` (chained mode), RX read in order.
+
+**Web panel, USB console, flash config, mDNS, button, LED — working (measured
+2026-11-08):** 6 parallel HTTP requests OK (max 0.48 s), save → restart → `cfg_loaded=1`,
+factory reset by button → flash pages `0xFF`, the USB console enumerates as
+`RLY-8 open firmware` (`0483:5740`), autodetect found the HA broker.
+
+**OTA (v2.0.0, measured 2026-11-08):** 67 KB upload in 2.8 s, back with the new version after
+~24 s; rejected: v1 image, `full.bin`, random file, bad token (403), bad password (401); a
+dropped upload changes nothing; MCU reset halfway through the copy → the bootloader repeats
+the install (the `OTAP` record stays, the app slot was already erased) → the new version
+boots; settings survive OTA.
+
+**v2.1.0 (2026-11-08):** web panel and messages in English; README in English with the
+Polish translation below. Installed through the web panel (OTA 2.0.0 → 2.1.0, 24 s), no
+ST-Link involved.
+
+**Open:** MQTT `mqtt_state=3` — the HA broker requires a login; set `mqtt_user`/`mqtt_pass`
+in the panel and check the 8 switches in HA.
+
+---
+
+## 6. Diagnostic programs (`firmware/port/probe/`)
+
+| purpose | command |
 | --- | --- |
-| skan MDIO (32 adresy, diagnostyka) | `make probe` → `build/probe.elf` |
-| soak MDIO (1000 rund) | `make probe-soak` |
-| czy PHY wstaje późno | `make probe-wait` |
-| cały bank pinów naraz + maska | `make probe-bank EXTRA="-DBANK=1 -DMASK=0x7FFF"` |
-| **wszystkie piny poza przekaźnikami i SWD** | `make probe-all EXTRA=-DDRIVE_LOW=1` |
-| wszystkie piny + jednoczesny skan MDIO | `make probe-all-mdio` |
-| identyfikacja przekaźnika po liczbie kliknięć | `make probe-count EXTRA="-DPORT_INDEX=2 -DSTART_PIN=8 -DEND_PIN=15"` |
-| jeden pin naraz, bez liczenia (przebieg „hold") | `make probe-hold EXTRA="-DPORT_INDEX=2 -DSTART_PIN=0 -DEND_PIN=7"` |
-| sweep opisujący każdy pin inną liczbą kliknięć | `make probe-multi` |
-| świecenie całego banku (stary wariant) | `make probe-relay` |
-| skan pinów GPIO z MDIO (starsza sonda) | `make probe-gpio` |
+| MDIO scan (32 addresses, diagnostics) | `make probe` → `build/probe.elf` |
+| MDIO soak (1000 rounds) | `make probe-soak` |
+| does the PHY come up late | `make probe-wait` |
+| whole pin bank at once + mask | `make probe-bank EXTRA="-DBANK=1 -DMASK=0x7FFF"` |
+| **all pins except relays and SWD** | `make probe-all EXTRA=-DDRIVE_LOW=1` |
+| all pins + simultaneous MDIO scan | `make probe-all-mdio` |
+| identify a relay by the number of clicks | `make probe-count EXTRA="-DPORT_INDEX=2 -DSTART_PIN=8 -DEND_PIN=15"` |
+| one pin at a time, no counting ("hold" run) | `make probe-hold EXTRA="-DPORT_INDEX=2 -DSTART_PIN=0 -DEND_PIN=7"` |
+| sweep giving each pin a different click count | `make probe-multi` |
+| light a whole bank (old variant) | `make probe-relay` |
+| GPIO pin scan with MDIO (older probe) | `make probe-gpio` |
 
-Wszystkie sondy zapisują wynik w RAM pod `0x20008000` (magic `0x524C5931`) i licznik startów
-pod `0x2000F000` (wzorzec `0xB007`) — ten drugi odróżnia „pętla" od „płytka się resetuje".
-
----
-
-## 7. Dalsze kroki (w tej kolejności)
-
-1. ~~Diagnostyka PHY / link~~ — **zrobione** (patrz §5). Bez DHCP firmware po 15 s
-   ustawia `192.168.9.50/24` (`static_ip=1`).
-3. **MQTT w HA** — wpisać login MQTT w panelu, sprawdzić w HA 8 przełączników
-   (discovery), przełączenie z HA → przekaźnik (pole `relay_mask` w `boot_status`).
-4. **Serwer JSON na TCP:2000** — zgodność z oryginalnym DFRobot (użyć `core/rly_json.c`).
-5. **RS485 / ramki `55 AA`** — zgodność z magistralą (`core/rly_frame.c`).
-6. Porządki: watchdog (IWDG), podpis obrazów OTA, opcjonalnie zapamiętywanie stanu przekaźników po restarcie
-   (dziś: po starcie wszystkie OFF, bez sekwencji klikania), uwierzytelnianie konsoli USB
-   (dziś: bez hasła — zakładamy fizyczny dostęp).
+All probes store their result in RAM at `0x20008000` (magic `0x524C5931`) and a boot counter
+at `0x2000F000` (pattern `0xB007`) — the latter tells "loop" from "the board keeps resetting".
+Probes link at `0x08000000` and overwrite the bootloader: run `make flash` afterwards.
 
 ---
 
-## 8. Lekcje (żeby nie powtarzać cudzych błędów)
+## 7. Next steps (in this order)
 
-- **Nie ufaj „HSERDY = kwarc X MHz”** — częstotliwość zmierz: włącz DWT_CYCCNT
-  (`DEMCR` bit 24, `DWT_CTRL` bit 0), przełącz `SW=HSE` i licz cykle w czasie hosta.
-- **PHY, który odpowiada po MDIO, wcale nie musi mieć zegara** — interfejs MDIO jest taktowany
-  MDC. Brak „signal detect” (PHYSTS bit 10) + cisza po drugiej stronie kabla = sprawdź X1/MCO.
-- lwIP 2.x: bez `netif_set_link_up()` żadna ramka nie wyjdzie (`tx_frames=0`).
-- **RAM 64 KB jest ciasny**: `--gc-sections` wyrzuca locale/malloc newlib (2 KB data);
-  ramki kopiujemy DMA↔pbuf bezpośrednio (`eth_dma_rx_peek/tx_acquire`), bez buforów pośrednich.
-- **Pętla główna bez opóźnień** → stan PHY czytać co 20 ms (MDIO jest wolne, a licznik
-  ponawiania autonegocjacji liczy wywołania).
-- **mDNS bez IGMP**: lwIP przyjmuje multicast przy `LWIP_IGMP=0`, ale MAC musi mieć `PAM`
-  (`MACFFR` bit 4), inaczej ramki do 224.0.0.251 giną w filtrze.
-- **USB OTG FS na F107 nie ma `NOVBUSSENS`** — bez VBUS na PA9 jedyna droga to wymusić PA9.
-- **Odczyt SWD w trakcie kasowania flash zwraca „DP wait”** — magistrala stoi; w skryptach
-  testowych traktować to jako „bootloader pracuje”, nie jako błąd.
-- **`#` w `$(shell …)` w Makefile to komentarz** — w wyrażeniu sed używać `.define` albo `\#`.
-
-- **`MACMIIAR` to `MAC_BASE + 0x10`**, `MACMIIDR` to `+0x14`. Zły adres wygląda jak
-  „MB wisi na zawsze", a jest odczytem własnego zapisu.
-- **Tabela wektorów tylko z desygnowanymi indeksami** (`[15] = SysTick_Handler`). Lista
-  pozycyjna przesunęła raz SysTick na slot PendSV → skok pod adres 0 → `INVSTATE` +
-  HardFault (`CFSR=0x00020000`, `HFSR=0x40000000`).
-- **lwIP `NO_SYS=1` + `SYS_LIGHTWEIGHT_PROT=1`**: `lwip/sys.h` nie wciąga `arch/sys_arch.h`
-  w gałęzi NO_SYS, więc `sys_prot_t` trzeba zdefiniować z `cc.h`.
-- **newlib**: linkować `-nostartfiles -specs=nosys.specs` (mamy własny startup), a w linker
-  script dodać `end`, `_end`, `__bss_start__`, `__bss_end__` (newlib `sbrk`).
-- **STM32F1: tryb ETH wybiera `AFIO_MAPR` bit 23** (`MII_RMII_SEL`), nie sam MAC.
-- **Bufory na stosie**: ramka 1524 B + pakiety MQTT 512 B rozsadzają mały stos — trzymać je
-  jako `static` (u nas `eth_dma.c`, `ethernetif.c`, `rly_session.c`).
-- **`make` i katalog `port/`**: target o nazwie katalogu jest zawsze „up to date" — dlatego
-  `make port-layer`, nie `make port`.
-- **Rzutowanie `uint32_t` → wskaźnik** przez `uintptr_t`, inaczej plik nie kompiluje się na
-  hoście (testy) przy `-Werror`.
+1. ~~PHY / link diagnostics~~ — **done** (see §5). Without DHCP the firmware switches to
+   `192.168.9.50/24` after 15 s (`static_ip=1`).
+2. **MQTT in HA** — enter the MQTT login in the panel, check the 8 switches in HA
+   (discovery), HA → relay switching (`relay_mask` in `boot_status`).
+3. **JSON server on TCP:2000** — compatibility with the stock DFRobot firmware (use
+   `core/rly_json.c`).
+4. **RS485 / `55 AA` frames** — bus compatibility (`core/rly_frame.c`).
+5. Housekeeping: watchdog (IWDG), signed OTA images, optionally restoring relay states after
+   a restart (today: all OFF at boot, no click sequence), USB console authentication (today:
+   none — physical access is assumed).
 
 ---
 
-## 9. Dokumentacja w repo
+## 8. Lessons (so nobody repeats them)
 
-| plik | zawartość |
+- **Do not trust "HSERDY = X MHz crystal"** — measure the frequency: enable DWT_CYCCNT
+  (`DEMCR` bit 24, `DWT_CTRL` bit 0), switch to `SW=HSE` and count cycles against host time.
+- **A PHY that answers over MDIO does not necessarily have a clock** — MDIO is clocked by
+  MDC. No "signal detect" (PHYSTS bit 10) + silence on the other end of the cable = check X1/MCO.
+- lwIP 2.x: without `netif_set_link_up()` no frame leaves (`tx_frames=0`).
+- **64 KB RAM is tight**: `--gc-sections` drops newlib locale/malloc (2 KB data); frames are
+  copied DMA↔pbuf directly (`eth_dma_rx_peek/tx_acquire`), without bounce buffers.
+- **Main loop without delays** → read the PHY state every 20 ms (MDIO is slow, and the
+  autoneg retry counter counts calls).
+- **mDNS without IGMP**: lwIP accepts multicast with `LWIP_IGMP=0`, but the MAC needs `PAM`
+  (`MACFFR` bit 4), otherwise frames to 224.0.0.251 are dropped by the filter.
+- **USB OTG FS on the F107 has no `NOVBUSSENS`** — without VBUS on PA9 the only way is to
+  force PA9 high.
+- **`#` inside `$(shell …)` in a Makefile starts a comment** — in the sed expression use
+  `.define` or `\#`.
+- **`MACMIIAR` is `MAC_BASE + 0x10`**, `MACMIIDR` is `+0x14`. A wrong address looks like
+  "MB hangs forever" but is really reading back your own write.
+- **Vector table with designated indices only** (`[15] = SysTick_Handler`). A positional list
+  once shifted SysTick onto the PendSV slot → jump to address 0 → `INVSTATE` + HardFault
+  (`CFSR=0x00020000`, `HFSR=0x40000000`).
+- **lwIP `NO_SYS=1` + `SYS_LIGHTWEIGHT_PROT=1`**: `lwip/sys.h` does not pull in
+  `arch/sys_arch.h` in the NO_SYS branch, so `sys_prot_t` has to be defined from `cc.h`.
+- **newlib**: link with `-nostartfiles -specs=nosys.specs` (own startup), and add `end`,
+  `_end`, `__bss_start__`, `__bss_end__` to the linker script (newlib `sbrk`).
+- **STM32F1: the ETH mode is selected by `AFIO_MAPR` bit 23** (`MII_RMII_SEL`), not by the MAC.
+- **Buffers on the stack**: a 1524 B frame + 512 B MQTT packets blow the small stack — keep
+  them `static`.
+- **`make` and the `port/` directory**: a target named like a directory is always "up to
+  date" — hence `make port-layer`, not `make port`.
+- **Cast `uint32_t` → pointer through `uintptr_t`**, otherwise the host build (tests) fails
+  with `-Werror`.
+- **Phone photos carry GPS in EXIF** — publish only re-encoded copies without metadata.
+
+---
+
+## 9. Documentation in the repo
+
+| file | content |
 | --- | --- |
-| `docs/STATUS.md` | jednostronicowy stan projektu (sprzęt, wgrywanie, mapa, Ethernet, firmware) |
-| `docs/hardware-findings.md` | wszystkie pomiary sprzętowe + pinout PHY do multimetru |
-| `docs/relay-mapping.md` | mapa przekaźników, metodologia (bisekcja maską) i przebiegi |
-| `docs/protocol.md` | protokół oryginału: ramki `55 AA` + JSON |
-| `docs/firmware-plan.md` | plan wdrożenia, kamienie milowe, ryzyka |
-| `tools/dump-original-fw.md` | procedura zrzutu oryginalnego firmware (tylko odczyt) |
+| `README.md` | user manual (English, Polish translation below) |
+| `docs/hardware-findings.md` | all hardware measurements + PHY pinout for the multimeter |
+| `docs/relay-mapping.md` | relay map, method (mask bisection) and test runs |
+| `docs/protocol.md` | stock protocol: `55 AA` frames + JSON |
+| `docs/STATUS.md` | historical project status notes |
+| `docs/firmware-plan.md` | historical plan, milestones, risks |
+| `tools/dump-original-fw.md` | procedure to dump the stock firmware (read-only) |

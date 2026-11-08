@@ -1,0 +1,25 @@
+# Whitelist: only source, docs and tooling are public.
+/*
+!/.gitignore
+!/README.md
+!/LICENSE
+!/THIRD_PARTY.md
+!/AGENTS.md
+!/docs/
+!/tools/
+!/firmware/
+
+# build output
+firmware/build/
+firmware/build-arm/
+firmware/dist/
+*.o
+*.su
+*.elf
+*.bin
+*.hex
+*.map
+
+# local environment (probe UID, addresses) — never publish
+AGENTS.local.md
+.DS_Store
